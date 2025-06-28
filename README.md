@@ -6,7 +6,7 @@
 
 - **📊 Complete Workflow**: Fetches PRs and generates AI analysis in one command
 - **🤖 AI-Powered Insights**: Uses OpenAI to generate concise summaries and comprehensive pattern analysis
-- **📁 Project Categorization**: Intelligently extracts project names from PR titles (`[CS-1234] ProjectName: description`)
+- **📁 Project Categorization**: Extracts project names from PR titles (`[CS-1234] ProjectName: description`)
 - **📝 Professional Reports**: Generates beautiful markdown reports perfect for performance reviews
 - **🔍 Comprehensive Analysis**: 5-section analysis covering project focus, technical themes, development velocity, cross-project insights, and key accomplishments
 - **📈 Smart Metrics**: Tracks lines changed, PR distribution, and project priorities
@@ -55,7 +55,7 @@ GITHUB_REPO=owner/repository
 GITHUB_USERNAME=your_username  # Optional: specific user to search for
 
 # Time Range (optional)
-DAYS=14  # Default: 180 days (6 months)
+DAYS=14  # Default: 14 days
 
 # AI Configuration (for summarization)
 OPENAI_API_KEY=your_openai_api_key_here

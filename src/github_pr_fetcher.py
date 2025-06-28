@@ -269,8 +269,7 @@ def main():
     repo_name = os.getenv('GITHUB_REPO')
     github_username = os.getenv(
         'GITHUB_USERNAME')  # Optional: specific username to search for
-    days_str = os.getenv(
-        'DAYS', '180')  # Default to 180 days (6 months) if not specified
+    days_str = os.getenv('DAYS', '14')  # Default to 14 days if not specified
 
     if not github_token:
         print("Error: GITHUB_TOKEN environment variable is required.")
