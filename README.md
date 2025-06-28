@@ -17,15 +17,15 @@
 ```
 pr/
 ├── src/
-│   ├── github_pr_fetcher.py      # Fetches PRs from GitHub
-│   └── pr_summarizer.py          # AI-powered analysis & summarization
+│   ├── github_pr_fetcher.py                     # Fetches PRs from GitHub
+│   └── pr_summarizer.py                         # AI-powered analysis & summarization
 ├── output/
-│   ├── pr_YYYY-MM-DD_YYYY-MM-DD_detailed.csv       # Raw PR data
-│   ├── pr_YYYY-MM-DD_YYYY-MM-DD_summarized.csv     # With AI summaries
-│   └── pr_YYYY-MM-DD_YYYY-MM-DD_summary.md         # Markdown analysis report
-├── main.py                        # Complete workflow entry point
-├── requirements.txt               # Dependencies
-├── .env.example                   # Configuration template
+│   ├── pr_YYYY-MM-DD_YYYY-MM-DD_detailed.csv    # Raw PR data
+│   ├── pr_YYYY-MM-DD_YYYY-MM-DD_summarized.csv  # With AI summaries
+│   └── pr_YYYY-MM-DD_YYYY-MM-DD_summary.md      # Markdown analysis report
+├── main.py                                      # Complete workflow entry point
+├── requirements.txt                             # Dependencies
+├── .env.example                                 # Configuration template
 └── README.md
 ```
 
@@ -59,7 +59,6 @@ DAYS=14  # Default: 180 days (6 months)
 
 # AI Configuration (for summarization)
 OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-3.5-turbo  # Optional: default is gpt-3.5-turbo
 ```
 
 #### Getting GitHub Token
@@ -125,12 +124,12 @@ Professional markdown report with:
 
 The tool intelligently extracts project names from PR titles using the format:
 ```
-[TICKET-123] ProjectName: Description of changes
+[TICKET-123] ProjectName: Summary of changes
 ```
 
 Examples:
-- `[CS-6304] Roles: ICC site/site app perms management` → **Roles** project
-- `[CS-5916] Community Deprecation: update cypress tests` → **Community Deprecation** project
+- `[CS-6304] Roles: DB schema for RBAC` → **Roles** project
+- `[CS-5916] Connector Catalog: update cypress tests` → **Connector Catalog** project
 - `[INFRA-123] Docker: Update base images` → **Docker** project
 
 PRs that don't match this pattern are categorized as "Uncategorized" and handled separately.
@@ -172,115 +171,3 @@ Check out the `examples/` directory for complete sample output demonstrating:
 - **[Detailed CSV](examples/pr_2025-06-01_2025-06-30_detailed.csv)**: Raw PR data with 15 realistic pull requests
 - **[Summarized CSV](examples/pr_2025-06-01_2025-06-30_summarized.csv)**: Same data enhanced with AI summaries
 - **[Analysis Report](examples/pr_2025-06-01_2025-06-30_summary.md)**: Comprehensive markdown analysis
-
-### Key Features Demonstrated
-
-**🎯 Project Categorization**
-```
-User Authentication (3 PRs, 864 lines) - OAuth2, session management, security fixes
-Performance Optimization (3 PRs, 1,001 lines) - Database indexing, frontend optimization
-Infrastructure Modernization (2 PRs, 1,357 lines) - Docker, Terraform
-Dashboard Redesign (1 PR, 1,247 lines) - UI/UX overhaul with real-time metrics
-```
-
-**📊 Professional Analysis**
-- **86% database performance improvement** (2.1s → 0.3s query time)
-- **40% frontend bundle size reduction** through code splitting
-- **Comprehensive security** audit with XSS vulnerability fixes
-- **Infrastructure modernization** with Docker containerization
-
-**📝 Executive Summary Format**
-```markdown
-**Period:** 2025-06-01 to 2025-06-30
-**Total PRs:** 15
-**Total Lines Changed:** 6,207
-**Average Lines per PR:** 413.8
-
-## 📊 Development Activity Analysis
-
-1. **PROJECT FOCUS & IMPACT**
-   - User Authentication project: strategic security focus (864 lines)
-   - Performance optimization: system efficiency improvements (1,001 lines)
-   - Infrastructure modernization: DevOps practices investment (1,357 lines)
-```
-
-## 🔧 Requirements
-
-- **Python 3.7+**
-- **GitHub Personal Access Token** with repo access
-- **OpenAI API Key** (for AI analysis)
-- **Repository access** (public or private based on token permissions)
-
-## 🆘 Troubleshooting
-
-**Authentication Error**
-- Verify GitHub token is valid and has correct permissions
-- Check repository name format: `owner/repository`
-
-**OpenAI API Error**
-- Verify API key is valid and has credits
-- Check model name (default: `gpt-3.5-turbo`)
-
-**Rate Limiting**
-- GitHub API: Tool includes automatic retries and delays
-- OpenAI API: Small delays between requests are built-in
-
-**No PRs Found**
-- Check the time range (increase `DAYS` value)
-- Verify the username and repository access
-
-## 🎯 Perfect For
-
-- **Performance Reviews**: Professional reports with quantified impact
-- **Project Planning**: Understanding development patterns and priorities
-- **Team Presentations**: Beautiful markdown output for sharing
-- **Self-Assessment**: Comprehensive analysis of your contributions
-- **Management Updates**: Executive summaries with key metrics
-
-## 📄 License
-
-This project is open source and available under the MIT License.
-
-## ✅ **Example Files Created**
-
-### **📊 Complete Dataset**
-- **15 realistic PRs** across a month (June 2025)
-- **6,207 total lines changed** showing substantial development activity
-- **Multiple project types**: Authentication, Performance, Infrastructure, UI/UX, Security
-
-### **🎯 Key Demonstrations**
-
-**Project Categorization Examples:**
-- **User Authentication** (3 PRs, 864 lines) - OAuth2, session management, security
-- **Performance Optimization** (3 PRs, 1,001 lines) - Database indexing, frontend optimization
-- **Infrastructure Modernization** (2 PRs, 1,357 lines) - Docker, Terraform
-- **Dashboard Redesign** (1 PR, 1,247 lines) - Major UI overhaul
-
-**Professional Metrics:**
-- **86% database performance improvement** (2.1s → 0.3s query time)
-- **40% frontend bundle size reduction** through code splitting
-- **Comprehensive security audit** with XSS vulnerability fixes
-- **Infrastructure modernization** with containerization
-
-**Realistic Variety:**
-- **Different PR sizes**: From 45-line documentation updates to 1,247-line feature implementations
-- **Mixed statuses**: Open/closed, merged/unmerged PRs
-- **Professional descriptions**: Realistic test plans, technical details, business impact
-- **Attachment examples**: Design docs, monitoring dashboards, API documentation
-
-## 📁 **Files Structure**
-```
-examples/
-├── README.md                                    # Example documentation
-├── pr_2025-06-01_2025-06-30_detailed.csv      # Raw PR data
-├── pr_2025-06-01_2025-06-30_summarized.csv    # With AI summaries
-└── pr_2025-06-01_2025-06-30_summary.md        # Comprehensive analysis
-```
-
-## 🎯 **Perfect for Showcasing**
-- **Performance Reviews**: Professional reports with quantified impact
-- **Project Planning**: Understanding development patterns and priorities
-- **Team Presentations**: Executive-ready analysis with clear insights
-- **Tool Demonstration**: Complete workflow from raw data to business intelligence
-
-The examples now provide potential users with a complete picture of what they'll receive from the GitHub PR Analytics Suite - from raw CSV data to sophisticated AI-powered insights perfect for professional development reporting! 🚀
