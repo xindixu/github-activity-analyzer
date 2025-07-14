@@ -165,6 +165,52 @@ DAYS=365 python main.py
 
 ## 🎨 Sample Output
 
+### Program output
+```bash
+🚀 Starting GitHub PR Analytics Suite
+==================================================
+📊 Step 1: Fetching PRs from GitHub...
+Searching for PRs created by: xindixu
+Time range: Past 180 day(s)
+Fetching PRs from instabase/instabase created by 'xindixu' after 2025-01-15...
+Found 325 PRs matching criteria
+Added PR: [CS-6454] DS UI: Disable indexing modal should list connected chatbots (165 lines changed)
+Added PR: [CS-6435] DS UI: Indexing items over limit + use real feature flag (165 lines changed)
+Added PR: [CS-0000] Roles: GA in 25.30 (11 lines changed)
+Added PR: [CS-6452] Roles: gate mount backend for create/edit/delete mount points (50 lines changed)
+Processed 5/325 PRs...
+...
+
+Exported 325 PRs to output/pr_2025-01-15_2025-07-14_detailed.csv
+
+Summary:
+Total PRs found: 325
+Total lines changed: 165431
+Average lines per PR: 509.0
+✅ PR data saved to: output/pr_2025-01-15_2025-07-14_detailed.csv
+
+🤖 Step 2: Generating AI summaries...
+📊 Loaded 325 PRs from output/pr_2025-01-15_2025-07-14_detailed.csv
+✅ OpenAI client initialized with model: gpt-3.5-turbo
+🤖 Generating AI summaries...
+Processing PR 1/325: [CS-6454] DS UI: Disable indexing modal should lis...
+Processing PR 2/325: [CS-6435] DS UI: Indexing items over limit + use r...
+...
+🔍 Analyzing patterns...
+💾 Saved summarized data to output/pr_2025-01-15_2025-07-14_summarized.csv
+📝 Saved pattern analysis to output/pr_2025-01-15_2025-07-14_summary.md
+
+🎯 QUICK ANALYSIS
+==================================================
+...
+
+🎉 WORKFLOW COMPLETE!
+==================================================
+📁 Detailed PR data: output/pr_2025-01-15_2025-07-14_detailed.csv
+🤖 AI summarized data: output/pr_2025-01-15_2025-07-14_summarized.csv
+📝 Pattern analysis: output/pr_2025-01-15_2025-07-14_summary.md
+
+```
 ### Example Files
 Check out the `examples/` directory for complete sample output demonstrating:
 
