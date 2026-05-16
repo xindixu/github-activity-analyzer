@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-GitHub PR Summarizer — three report modes:
+GitHub PR Summarizer — pipeline steps:
 
-  perf-review   Performance-review report (per-PR summaries + pattern analysis)
-  by-project    Group PRs by project area with concise progress bullets
-  technical     Highlight interesting technical details; skip uninteresting PRs
+  fetch        Per-PR summaries → _detailed.csv + _summarized.csv
+  by-project   _summarized.csv → _by_project.md
+  technical    _detailed.csv → _technical_highlights.md
+  perf-review  _summarized.csv → _perf_review.md
 """
 
 from __future__ import annotations
@@ -15,15 +16,13 @@ import re
 import sys
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
-
-SUMMARIZE_MODES = ("perf-review", "by-project", "technical")
-DEFAULT_MODE = "perf-review"
 
 PROJECT_PATTERN = re.compile(r"\[[^\]]+\]\s*([^:]+):")
 
@@ -76,7 +75,6 @@ class PRSummarizer:
 
     @staticmethod
     def extract_project_from_title(title: str) -> str:
-        """Extract project from titles like `feat: [SUP-1] Storybook: ...`."""
         match = PROJECT_PATTERN.search(title)
         if match:
             return match.group(1).strip()
@@ -139,9 +137,7 @@ Analysis:"""
 
         return self._call_openai(prompt, max_tokens=800)
 
-    def summarize_project_progress(
-        self, project: str, prs: List[Dict]
-    ) -> str:
+    def summarize_project_progress(self, project: str, prs: List[Dict]) -> str:
         pr_lines = []
         for pr in prs:
             desc = (pr.get("description") or "").strip()
@@ -149,6 +145,9 @@ Analysis:"""
                 desc = "(title only)"
             else:
                 desc = desc[:400] + ("…" if len(desc) > 400 else "")
+            summary = pr.get("ai_summary", "")
+            if summary and summary != "No summary":
+                desc = f"{desc}\n  Summary: {summary[:200]}"
             pr_lines.append(
                 f"- {pr['title']} ({pr.get('lines_of_code_changes', 0)} lines)\n  {desc}"
             )
@@ -242,39 +241,58 @@ Technical bullets (or SKIP):"""
         return "\n---\n\n".join(sections) + "\n"
 
 
-def resolve_mode(mode: str | None = None) -> str:
-    chosen = (mode or os.getenv("SUMMARIZE_MODE", DEFAULT_MODE)).strip().lower()
-    if chosen not in SUMMARIZE_MODES:
-        raise ValueError(
-            f"Invalid mode '{chosen}'. Choose from: {', '.join(SUMMARIZE_MODES)}"
-        )
-    return chosen
-
-
-def date_part_from_csv(csv_file: str) -> str:
-    base_name = os.path.basename(csv_file)
+def date_part_from_path(path: str) -> str:
+    base_name = os.path.basename(path)
     if base_name.startswith("pr_") and base_name.endswith(".csv"):
         date_part = base_name[3:-4]
-        if date_part.endswith("_detailed"):
-            date_part = date_part[: -len("_detailed")]
+        for suffix in ("_detailed", "_summarized"):
+            if date_part.endswith(suffix):
+                date_part = date_part[: -len(suffix)]
         return date_part
     return os.path.splitext(base_name)[0]
 
 
-def report_paths(csv_file: str, mode: str) -> tuple[str, str]:
-    """Return (summarized_csv_path or None, markdown_report_path)."""
-    date_part = date_part_from_csv(csv_file)
+def paths_for_date_part(date_part: str) -> Dict[str, str]:
     prefix = f"output/pr_{date_part}"
+    return {
+        "detailed": f"{prefix}_detailed.csv",
+        "summarized": f"{prefix}_summarized.csv",
+        "by_project": f"{prefix}_by_project.md",
+        "technical": f"{prefix}_technical_highlights.md",
+        "perf_review": f"{prefix}_perf_review.md",
+    }
 
-    if mode == "perf-review":
-        return f"{prefix}_summarized.csv", f"{prefix}_summary.md"
-    if mode == "by-project":
-        return None, f"{prefix}_by_project.md"
-    return None, f"{prefix}_technical_highlights.md"
+
+def paths_from_detailed(detailed_csv: str) -> Dict[str, str]:
+    return paths_for_date_part(date_part_from_path(detailed_csv))
 
 
-def write_report_header(f, df: pd.DataFrame, csv_file: str, *, title: str, subtitle: str):
-    date_part = date_part_from_csv(csv_file)
+def auto_detect_detailed_csv() -> str:
+    output_dir = "output"
+    if not os.path.exists(output_dir):
+        raise FileNotFoundError("No output directory found. Run: python main.py fetch")
+
+    csv_files = [
+        f"{output_dir}/{f}"
+        for f in os.listdir(output_dir)
+        if f.startswith("pr_") and f.endswith("_detailed.csv")
+    ]
+    if not csv_files:
+        raise FileNotFoundError(
+            "No _detailed.csv found in output/. Run: python main.py fetch"
+        )
+
+    csv_files.sort(key=os.path.getmtime, reverse=True)
+    return csv_files[0]
+
+
+def csvs_ready(paths: Dict[str, str]) -> bool:
+    return os.path.isfile(paths["detailed"]) and os.path.isfile(paths["summarized"])
+
+
+def write_report_header(
+    f, df: pd.DataFrame, date_part: str, *, title: str, subtitle: str
+):
     date_range = date_part.replace("_", " – ")
     repo = os.getenv("GITHUB_REPO", "")
 
@@ -291,37 +309,130 @@ def write_report_header(f, df: pd.DataFrame, csv_file: str, *, title: str, subti
     f.write("---\n\n")
 
 
-def process_perf_review(
-    summarizer: PRSummarizer, df: pd.DataFrame, csv_file: str, output_file: str | None
-) -> str:
-    summarized_csv, analysis_file = report_paths(csv_file, "perf-review")
-    if output_file:
-        summarized_csv = output_file
+def cmd_fetch_summarize(detailed_csv: str | None = None) -> Tuple[str, str]:
+    """Fetch PRs and add per-PR ai_summary → detailed + summarized CSVs."""
+    if detailed_csv and os.path.isfile(detailed_csv):
+        paths = paths_from_detailed(detailed_csv)
+        print(f"📂 Using existing detailed CSV: {paths['detailed']}")
+    else:
+        from github_pr_fetcher import main as fetch_prs
 
-    print("🤖 Generating per-PR summaries...")
-    summaries = []
-    for idx, row in df.iterrows():
-        print(f"Processing PR {idx + 1}/{len(df)}: {row['title'][:50]}...")
-        summaries.append(summarizer.summarize_pr(row["title"], row["description"]))
-        time.sleep(0.1)
+        print("📊 Fetching PRs from GitHub...")
+        fetched = fetch_prs()
+        if not fetched:
+            raise RuntimeError("PR fetching failed")
+        paths = paths_from_detailed(fetched)
+        detailed_csv = paths["detailed"]
+        print(f"✅ PR data saved to: {detailed_csv}")
 
-    df = df.copy()
-    df["ai_summary"] = summaries
+    df = pd.read_csv(paths["detailed"])
+    print(f"📊 Loaded {len(df)} PRs")
 
-    print("🔍 Analyzing patterns...")
-    pattern_analysis = summarizer.analyze_pr_patterns(df.to_dict("records"))
+    if "ai_summary" in df.columns and df["ai_summary"].notna().all():
+        print("ℹ️  Per-PR summaries already present; refreshing summarized CSV.")
+    else:
+        summarizer = PRSummarizer()
+        print("🤖 Generating per-PR summaries...")
+        summaries = []
+        for idx, row in df.iterrows():
+            print(f"  PR {idx + 1}/{len(df)}: {row['title'][:50]}...")
+            summaries.append(summarizer.summarize_pr(row["title"], row["description"]))
+            time.sleep(0.1)
+        df = df.copy()
+        df["ai_summary"] = summaries
 
     os.makedirs("output", exist_ok=True)
-    df.to_csv(summarized_csv, index=False)
-    print(f"💾 Saved summarized data to {summarized_csv}")
+    df.to_csv(paths["summarized"], index=False)
+    print(f"💾 Saved summarized data to {paths['summarized']}")
 
-    with open(analysis_file, "w") as f:
+    return paths["detailed"], paths["summarized"]
+
+
+def ensure_csvs(detailed_csv: str | None = None) -> Dict[str, str]:
+    """Ensure _detailed.csv and _summarized.csv exist; run fetch if not."""
+    if detailed_csv:
+        paths = paths_from_detailed(detailed_csv)
+    else:
+        try:
+            detailed_csv = auto_detect_detailed_csv()
+            paths = paths_from_detailed(detailed_csv)
+        except FileNotFoundError:
+            paths = None
+
+    if paths and csvs_ready(paths):
+        print(f"📂 Using {paths['detailed']}")
+        return paths
+
+    print("⚠️  Missing _detailed.csv or _summarized.csv — running fetch...")
+    detailed, _ = cmd_fetch_summarize(detailed_csv)
+    return paths_from_detailed(detailed)
+
+
+def cmd_by_project(detailed_csv: str | None = None) -> str:
+    paths = ensure_csvs(detailed_csv)
+    df = pd.read_csv(paths["summarized"])
+    date_part = date_part_from_path(paths["summarized"])
+
+    summarizer = PRSummarizer()
+    print("📂 Summarizing by project area...")
+    body = summarizer.generate_by_project_report(df.to_dict("records"))
+
+    with open(paths["by_project"], "w") as f:
         write_report_header(
             f,
             df,
-            csv_file,
-            title="GitHub PR Analysis Report",
-            subtitle="*Mode: performance review*",
+            date_part,
+            title="PRs by Project Area",
+            subtitle="*Progress summary per project area*",
+        )
+        f.write(body)
+
+    print(f"📝 Saved report to {paths['by_project']}")
+    return paths["by_project"]
+
+
+def cmd_technical(detailed_csv: str | None = None) -> str:
+    paths = ensure_csvs(detailed_csv)
+    df = pd.read_csv(paths["detailed"])
+    date_part = date_part_from_path(paths["detailed"])
+
+    summarizer = PRSummarizer()
+    print("🔬 Extracting technical highlights...")
+    body = summarizer.generate_technical_report(df.to_dict("records"))
+
+    with open(paths["technical"], "w") as f:
+        write_report_header(
+            f,
+            df,
+            date_part,
+            title="Technical Highlights",
+            subtitle="*Interesting implementation details only*",
+        )
+        f.write(body)
+
+    print(f"📝 Saved report to {paths['technical']}")
+    return paths["technical"]
+
+
+def cmd_perf_review(detailed_csv: str | None = None) -> str:
+    paths = ensure_csvs(detailed_csv)
+    df = pd.read_csv(paths["summarized"])
+    date_part = date_part_from_path(paths["summarized"])
+
+    if "ai_summary" not in df.columns:
+        raise ValueError("summarized CSV missing ai_summary; run: python main.py fetch")
+
+    summarizer = PRSummarizer()
+    print("🔍 Analyzing patterns for performance review...")
+    pattern_analysis = summarizer.analyze_pr_patterns(df.to_dict("records"))
+
+    with open(paths["perf_review"], "w") as f:
+        write_report_header(
+            f,
+            df,
+            date_part,
+            title="GitHub PR Performance Review",
+            subtitle="*Development activity analysis for performance reviews*",
         )
         f.write("## Development Activity Analysis\n\n")
         f.write(pattern_analysis)
@@ -343,149 +454,138 @@ def process_perf_review(
             f.write(f"**Summary:** {row['ai_summary']}\n\n")
             f.write("---\n\n")
 
-    print(f"📝 Saved report to {analysis_file}")
+    print(f"📝 Saved report to {paths['perf_review']}")
     print("\n🎯 QUICK ANALYSIS")
     print("=" * 50)
     print(pattern_analysis)
 
-    return summarized_csv
+    return paths["perf_review"]
 
 
-def process_by_project(
-    summarizer: PRSummarizer, df: pd.DataFrame, csv_file: str
-) -> str:
-    _, report_file = report_paths(csv_file, "by-project")
-    pr_data = df.to_dict("records")
+def cmd_all(detailed_csv: str | None = None) -> str:
+    """Fetch + all report types (including perf-review). Does not publish."""
+    detailed, _ = cmd_fetch_summarize(detailed_csv)
+    cmd_by_project(detailed)
+    cmd_technical(detailed)
+    cmd_perf_review(detailed)
+    return detailed
 
-    print("📂 Summarizing by project area...")
-    body = summarizer.generate_by_project_report(pr_data)
 
-    os.makedirs("output", exist_ok=True)
-    with open(report_file, "w") as f:
-        write_report_header(
-            f,
-            df,
-            csv_file,
-            title="PRs by Project Area",
-            subtitle="*Mode: by-project — progress summary per area*",
+def cmd_publish(detailed_csv: str | None = None, *, push: bool = False) -> bool:
+    """Copy output artifacts to pr-reports and commit."""
+    from publish_reports import publish, prefix_from_csv
+
+    if detailed_csv:
+        prefix = prefix_from_csv(Path(detailed_csv))
+    else:
+        from publish_reports import latest_prefix
+
+        prefix = latest_prefix()
+
+    if not os.getenv("PR_REPORTS_DIR"):
+        raise ValueError(
+            "PR_REPORTS_DIR is not set in .env — required for publish"
         )
-        f.write(body)
 
-    print(f"📝 Saved report to {report_file}")
-    return report_file
-
-
-def process_technical(
-    summarizer: PRSummarizer, df: pd.DataFrame, csv_file: str
-) -> str:
-    _, report_file = report_paths(csv_file, "technical")
-    pr_data = df.to_dict("records")
-
-    print("🔬 Extracting technical highlights...")
-    body = summarizer.generate_technical_report(pr_data)
-
-    os.makedirs("output", exist_ok=True)
-    with open(report_file, "w") as f:
-        write_report_header(
-            f,
-            df,
-            csv_file,
-            title="Technical Highlights",
-            subtitle="*Mode: technical — interesting implementation details only*",
-        )
-        f.write(body)
-
-    print(f"📝 Saved report to {report_file}")
-    return report_file
+    print("📤 Publishing reports to pr-reports...")
+    return publish(prefix, push=push)
 
 
-def process_pr_csv(
-    csv_file: str,
-    mode: str | None = None,
-    output_file: str | None = None,
-) -> str | None:
-    mode = resolve_mode(mode)
-
-    try:
-        df = pd.read_csv(csv_file)
-        print(f"📊 Loaded {len(df)} PRs from {csv_file}")
-    except Exception as e:
-        print(f"❌ Error loading CSV: {e}")
-        return None
-
-    print(f"📋 Summarize mode: {mode}")
-    summarizer = PRSummarizer()
-
-    if mode == "perf-review":
-        return process_perf_review(summarizer, df, csv_file, output_file)
-    if mode == "by-project":
-        return process_by_project(summarizer, df, csv_file)
-    return process_technical(summarizer, df, csv_file)
+def cmd_ship(detailed_csv: str | None = None, *, push: bool = False) -> str:
+    """Fetch, by-project, technical, then publish to pr-reports."""
+    detailed, _ = cmd_fetch_summarize(detailed_csv)
+    cmd_by_project(detailed)
+    cmd_technical(detailed)
+    cmd_publish(detailed, push=push)
+    return detailed
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Summarize GitHub PRs using OpenAI",
+        description="GitHub PR Analytics — fetch and generate reports",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""modes:
-  perf-review   Full performance-review report (default)
-  by-project    Group PRs by project with progress bullets
-  technical     Technical highlights only; skip low-signal PRs
+        epilog="""commands:
+  fetch         Fetch PRs + per-PR summaries → _detailed.csv, _summarized.csv
+  by-project    _summarized.csv → _by_project.md (runs fetch if CSVs missing)
+  technical     _detailed.csv → _technical_highlights.md (runs fetch if missing)
+  perf-review   _summarized.csv → _perf_review.md (runs fetch if missing)
+  publish       Copy output/ to pr-reports repo and commit
+  all           fetch + by-project + technical + perf-review
+  ship          fetch + by-project + technical + publish (default)
 
 Examples:
-  python src/pr_summarizer.py --mode by-project
-  python src/pr_summarizer.py output/pr_2026-05-09_2026-05-16_detailed.csv --mode technical
-  SUMMARIZE_MODE=by-project python src/pr_summarizer.py
+  python main.py fetch
+  python main.py ship
+  python main.py publish --push
+  python main.py all --csv output/pr_2026-05-04_2026-05-08_detailed.csv
 """,
     )
-    parser.add_argument("csv_file", nargs="?", help="CSV file to process")
-    parser.add_argument("--output", help="Output CSV path (perf-review mode only)")
     parser.add_argument(
-        "--mode",
-        "-m",
-        choices=SUMMARIZE_MODES,
-        default=None,
-        help=f"Report mode (default: {DEFAULT_MODE}, or SUMMARIZE_MODE env)",
+        "command",
+        choices=[
+            "fetch",
+            "by-project",
+            "technical",
+            "perf-review",
+            "publish",
+            "all",
+            "ship",
+        ],
+        help="Pipeline step to run",
+    )
+    parser.add_argument(
+        "--csv",
+        dest="detailed_csv",
+        help="Path to _detailed.csv (default: latest in output/)",
+    )
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="Push pr-reports after commit (publish/ship only)",
     )
     return parser
-
-
-def auto_detect_csv() -> str:
-    output_dir = "output"
-    if not os.path.exists(output_dir):
-        print("❌ No output directory found.")
-        print("Run the PR fetcher first to generate CSV data.")
-        sys.exit(1)
-
-    csv_files = [
-        f"{output_dir}/{f}"
-        for f in os.listdir(output_dir)
-        if f.startswith("pr_")
-        and f.endswith(".csv")
-        and "summarized" not in f
-    ]
-    if not csv_files:
-        print("❌ No PR CSV files found in output directory.")
-        print("Run the PR fetcher first to generate CSV data.")
-        sys.exit(1)
-
-    csv_files.sort(key=os.path.getmtime, reverse=True)
-    return csv_files[0]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    csv_file = args.csv_file or auto_detect_csv()
-    if not args.csv_file:
-        print(f"🔍 Auto-detected CSV file: {csv_file}")
-
-    result = process_pr_csv(csv_file, mode=args.mode, output_file=args.output)
-    if result:
-        print(f"\n✅ Summary complete! Output: {result}")
+    try:
+        if args.command == "fetch":
+            detailed, summarized = cmd_fetch_summarize(args.detailed_csv)
+            print(f"\n✅ Done: {detailed}\n           {summarized}")
+        elif args.command == "by-project":
+            out = cmd_by_project(args.detailed_csv)
+            print(f"\n✅ Done: {out}")
+        elif args.command == "technical":
+            out = cmd_technical(args.detailed_csv)
+            print(f"\n✅ Done: {out}")
+        elif args.command == "perf-review":
+            out = cmd_perf_review(args.detailed_csv)
+            print(f"\n✅ Done: {out}")
+        elif args.command == "publish":
+            push = args.push or os.getenv("PUBLISH_PUSH", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            cmd_publish(args.detailed_csv, push=push)
+            print("\n✅ Published to pr-reports")
+        elif args.command == "all":
+            cmd_all(args.detailed_csv)
+            print("\n✅ All reports generated")
+        elif args.command == "ship":
+            push = args.push or os.getenv("PUBLISH_PUSH", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            cmd_ship(args.detailed_csv, push=push)
+            print("\n✅ Shipped: reports generated and published")
         return 0
-    return 1
+    except Exception as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

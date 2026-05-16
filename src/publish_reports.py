@@ -44,7 +44,8 @@ def prefix_from_csv(csv_path: Path) -> str:
     raise ValueError(f"Unexpected CSV filename: {name}")
 
 
-def latest_prefix() -> str:
+def auto_detect_detailed_csv() -> str:
+    """Return path to the most recent _detailed.csv in output/."""
     output = output_dir()
     candidates = sorted(
         output.glob("pr_*_detailed.csv"),
@@ -53,7 +54,11 @@ def latest_prefix() -> str:
     )
     if not candidates:
         raise FileNotFoundError(f"No PR output CSVs found in {output}")
-    return prefix_from_csv(candidates[0])
+    return str(candidates[0])
+
+
+def latest_prefix() -> str:
+    return prefix_from_csv(Path(auto_detect_detailed_csv()))
 
 
 def files_for_prefix(prefix: str) -> list[Path]:
