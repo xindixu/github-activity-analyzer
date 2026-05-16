@@ -309,7 +309,13 @@ def write_report_header(
     f.write("---\n\n")
 
 
-def cmd_fetch_summarize(detailed_csv: str | None = None) -> Tuple[str, str]:
+def cmd_fetch_summarize(
+    detailed_csv: str | None = None,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+) -> Tuple[str, str]:
     """Fetch PRs and add per-PR ai_summary → detailed + summarized CSVs."""
     if detailed_csv and os.path.isfile(detailed_csv):
         paths = paths_from_detailed(detailed_csv)
@@ -318,7 +324,7 @@ def cmd_fetch_summarize(detailed_csv: str | None = None) -> Tuple[str, str]:
         from github_pr_fetcher import main as fetch_prs
 
         print("📊 Fetching PRs from GitHub...")
-        fetched = fetch_prs()
+        fetched = fetch_prs(start=start, end=end, days=days)
         if not fetched:
             raise RuntimeError("PR fetching failed")
         paths = paths_from_detailed(fetched)
@@ -348,7 +354,13 @@ def cmd_fetch_summarize(detailed_csv: str | None = None) -> Tuple[str, str]:
     return paths["detailed"], paths["summarized"]
 
 
-def ensure_csvs(detailed_csv: str | None = None) -> Dict[str, str]:
+def ensure_csvs(
+    detailed_csv: str | None = None,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+) -> Dict[str, str]:
     """Ensure _detailed.csv and _summarized.csv exist; run fetch if not."""
     if detailed_csv:
         paths = paths_from_detailed(detailed_csv)
@@ -364,12 +376,20 @@ def ensure_csvs(detailed_csv: str | None = None) -> Dict[str, str]:
         return paths
 
     print("⚠️  Missing _detailed.csv or _summarized.csv — running fetch...")
-    detailed, _ = cmd_fetch_summarize(detailed_csv)
+    detailed, _ = cmd_fetch_summarize(
+        detailed_csv, start=start, end=end, days=days
+    )
     return paths_from_detailed(detailed)
 
 
-def cmd_by_project(detailed_csv: str | None = None) -> str:
-    paths = ensure_csvs(detailed_csv)
+def cmd_by_project(
+    detailed_csv: str | None = None,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+) -> str:
+    paths = ensure_csvs(detailed_csv, start=start, end=end, days=days)
     df = pd.read_csv(paths["summarized"])
     date_part = date_part_from_path(paths["summarized"])
 
@@ -391,8 +411,14 @@ def cmd_by_project(detailed_csv: str | None = None) -> str:
     return paths["by_project"]
 
 
-def cmd_technical(detailed_csv: str | None = None) -> str:
-    paths = ensure_csvs(detailed_csv)
+def cmd_technical(
+    detailed_csv: str | None = None,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+) -> str:
+    paths = ensure_csvs(detailed_csv, start=start, end=end, days=days)
     df = pd.read_csv(paths["detailed"])
     date_part = date_part_from_path(paths["detailed"])
 
@@ -414,8 +440,14 @@ def cmd_technical(detailed_csv: str | None = None) -> str:
     return paths["technical"]
 
 
-def cmd_perf_review(detailed_csv: str | None = None) -> str:
-    paths = ensure_csvs(detailed_csv)
+def cmd_perf_review(
+    detailed_csv: str | None = None,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+) -> str:
+    paths = ensure_csvs(detailed_csv, start=start, end=end, days=days)
     df = pd.read_csv(paths["summarized"])
     date_part = date_part_from_path(paths["summarized"])
 
@@ -462,12 +494,20 @@ def cmd_perf_review(detailed_csv: str | None = None) -> str:
     return paths["perf_review"]
 
 
-def cmd_all(detailed_csv: str | None = None) -> str:
+def cmd_all(
+    detailed_csv: str | None = None,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+) -> str:
     """Fetch + all report types (including perf-review). Does not publish."""
-    detailed, _ = cmd_fetch_summarize(detailed_csv)
-    cmd_by_project(detailed)
-    cmd_technical(detailed)
-    cmd_perf_review(detailed)
+    detailed, _ = cmd_fetch_summarize(
+        detailed_csv, start=start, end=end, days=days
+    )
+    cmd_by_project(detailed, start=start, end=end, days=days)
+    cmd_technical(detailed, start=start, end=end, days=days)
+    cmd_perf_review(detailed, start=start, end=end, days=days)
     return detailed
 
 
@@ -491,11 +531,20 @@ def cmd_publish(detailed_csv: str | None = None, *, push: bool = False) -> bool:
     return publish(prefix, push=push)
 
 
-def cmd_ship(detailed_csv: str | None = None, *, push: bool = False) -> str:
+def cmd_ship(
+    detailed_csv: str | None = None,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+    push: bool = False,
+) -> str:
     """Fetch, by-project, technical, then publish to pr-reports."""
-    detailed, _ = cmd_fetch_summarize(detailed_csv)
-    cmd_by_project(detailed)
-    cmd_technical(detailed)
+    detailed, _ = cmd_fetch_summarize(
+        detailed_csv, start=start, end=end, days=days
+    )
+    cmd_by_project(detailed, start=start, end=end, days=days)
+    cmd_technical(detailed, start=start, end=end, days=days)
     cmd_publish(detailed, push=push)
     return detailed
 
@@ -514,11 +563,24 @@ def build_parser() -> argparse.ArgumentParser:
   ship          fetch + by-project + technical + publish (default)
 
 Examples:
-  python main.py fetch
-  python main.py ship
+  python main.py fetch --start 2026-05-04 --end 2026-05-08
+  python main.py ship --start 2026-05-04 --end 2026-05-08
+  DAYS=7 python main.py fetch
   python main.py publish --push
-  python main.py all --csv output/pr_2026-05-04_2026-05-08_detailed.csv
 """,
+    )
+    parser.add_argument(
+        "--start",
+        help="Start date YYYY-MM-DD, inclusive (or START_DATE env)",
+    )
+    parser.add_argument(
+        "--end",
+        help="End date YYYY-MM-DD, inclusive (or END_DATE env)",
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        help="Past N days from today (ignored if --start/--end set; default: DAYS env)",
     )
     parser.add_argument(
         "command",
@@ -550,18 +612,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    fetch_kw = {"start": args.start, "end": args.end, "days": args.days}
+
     try:
         if args.command == "fetch":
-            detailed, summarized = cmd_fetch_summarize(args.detailed_csv)
+            detailed, summarized = cmd_fetch_summarize(
+                args.detailed_csv, **fetch_kw
+            )
             print(f"\n✅ Done: {detailed}\n           {summarized}")
         elif args.command == "by-project":
-            out = cmd_by_project(args.detailed_csv)
+            out = cmd_by_project(args.detailed_csv, **fetch_kw)
             print(f"\n✅ Done: {out}")
         elif args.command == "technical":
-            out = cmd_technical(args.detailed_csv)
+            out = cmd_technical(args.detailed_csv, **fetch_kw)
             print(f"\n✅ Done: {out}")
         elif args.command == "perf-review":
-            out = cmd_perf_review(args.detailed_csv)
+            out = cmd_perf_review(args.detailed_csv, **fetch_kw)
             print(f"\n✅ Done: {out}")
         elif args.command == "publish":
             push = args.push or os.getenv("PUBLISH_PUSH", "").lower() in (
@@ -572,7 +638,7 @@ def main(argv: list[str] | None = None) -> int:
             cmd_publish(args.detailed_csv, push=push)
             print("\n✅ Published to pr-reports")
         elif args.command == "all":
-            cmd_all(args.detailed_csv)
+            cmd_all(args.detailed_csv, **fetch_kw)
             print("\n✅ All reports generated")
         elif args.command == "ship":
             push = args.push or os.getenv("PUBLISH_PUSH", "").lower() in (
@@ -580,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
                 "true",
                 "yes",
             )
-            cmd_ship(args.detailed_csv, push=push)
+            cmd_ship(args.detailed_csv, push=push, **fetch_kw)
             print("\n✅ Shipped: reports generated and published")
         return 0
     except Exception as exc:
