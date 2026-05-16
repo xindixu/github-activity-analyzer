@@ -9,8 +9,8 @@ import os
 import csv
 import re
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Callable, List, Dict, TypeVar
+from datetime import date, datetime, timedelta, timezone
+from typing import Callable, Dict, List, Optional, TypeVar
 
 from github import Github
 from dotenv import load_dotenv
@@ -60,6 +60,57 @@ def retry_github(
             )
             time.sleep(delay)
     raise last_error  # pragma: no cover
+
+
+def parse_date(value: str, label: str) -> date:
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(f"{label} must be YYYY-MM-DD, got '{value}'") from exc
+
+
+def resolve_fetch_range(
+    *,
+    days: Optional[int] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> tuple[date, date, str]:
+    """
+    Resolve the fetch window and GitHub search `created:` qualifier.
+
+    Returns (start_date, end_date, created_search_fragment).
+    """
+    start = start or os.getenv("START_DATE")
+    end = end or os.getenv("END_DATE")
+
+    if start or end:
+        if not start or not end:
+            raise ValueError(
+                "Both start and end dates are required (use --start/--end or "
+                "START_DATE/END_DATE)"
+            )
+        start_d = parse_date(start, "start date")
+        end_d = parse_date(end, "end date")
+        if start_d > end_d:
+            raise ValueError("start date must be on or before end date")
+        created = f"created:{start_d.isoformat()}..{end_d.isoformat()}"
+        return start_d, end_d, created
+
+    days = days if days is not None else int(os.getenv("DAYS", "14"))
+    if days <= 0:
+        raise ValueError("DAYS must be a positive integer")
+
+    end_d = datetime.now(timezone.utc).date()
+    start_d = end_d - timedelta(days=days)
+    created = f"created:>{start_d.isoformat()}"
+    return start_d, end_d, created
+
+
+def date_bounds(start_d: date, end_d: date) -> tuple[datetime, datetime]:
+    """UTC bounds for filtering PR created_at (end date is inclusive)."""
+    start_dt = datetime.combine(start_d, datetime.min.time(), tzinfo=timezone.utc)
+    end_dt = datetime.combine(end_d, datetime.max.time(), tzinfo=timezone.utc)
+    return start_dt, end_dt
 
 
 class PRAnalyzer:
@@ -140,32 +191,36 @@ class PRAnalyzer:
             result_parts
         ) if result_parts else "No meaningful description available"
 
-    def fetch_user_prs(self,
-                       repo_name: str,
-                       github_username: str = None,
-                       days: int = 180) -> List[Dict]:
-        """
-        Fetch PRs created by the specified user in the specified repo
-        within the past N days.
-        """
+    def fetch_user_prs(
+        self,
+        repo_name: str,
+        github_username: str = None,
+        *,
+        days: Optional[int] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+    ) -> List[Dict]:
+        """Fetch PRs created by the user in the repo for a date range or past N days."""
         try:
             repo = self.github.get_repo(repo_name)
         except Exception as e:
             print(f"Error accessing repository {repo_name}: {e}")
             return []
 
-        # Use provided username or fall back to authenticated user
         target_username = github_username or self.user.login
-
-        # Calculate date threshold (timezone-aware to match GitHub API)
-        threshold_date = datetime.now(timezone.utc) - timedelta(days=days)
+        start_d, end_d, created_clause = resolve_fetch_range(
+            days=days, start=start, end=end
+        )
+        start_dt, end_dt = date_bounds(start_d, end_d)
 
         print(
-            f"Fetching PRs from {repo_name} created by '{target_username}' after {threshold_date.strftime('%Y-%m-%d')}..."
+            f"Fetching PRs from {repo_name} created by '{target_username}' "
+            f"from {start_d.isoformat()} to {end_d.isoformat()}..."
         )
 
-        # Use GitHub's search API to filter PRs by author - much more efficient!
-        search_query = f"repo:{repo_name} is:pr author:{target_username} created:>{threshold_date.strftime('%Y-%m-%d')}"
+        search_query = (
+            f"repo:{repo_name} is:pr author:{target_username} {created_clause}"
+        )
 
         try:
             # Search for PRs matching our criteria
@@ -184,7 +239,14 @@ class PRAnalyzer:
                     print(f"Processed {processed_count}/{total_count} PRs...")
 
                     # Convert issue to PR object to get PR-specific data
-                pr = repo.get_pull(issue.number)
+                pr = retry_github(
+                    lambda n=issue.number: repo.get_pull(n),
+                    label=f"get_pull #{issue.number}",
+                )
+                time.sleep(FETCH_DELAY_SEC)
+
+                if not (start_dt <= pr.created_at <= end_dt):
+                    continue
 
                 # Get attachments
                 attachments = self.get_pr_attachments(pr)
@@ -236,30 +298,30 @@ class PRAnalyzer:
             print(f"Error searching for PRs: {e}")
             print("Falling back to the original method...")
             # Fallback to original method if search fails
-            return self._fetch_user_prs_fallback(repo, target_username,
-                                                 threshold_date)
+            return self._fetch_user_prs_fallback(
+                repo, target_username, start_dt, end_dt
+            )
 
-    def _fetch_user_prs_fallback(self, repo, target_username: str,
-                                 threshold_date) -> List[Dict]:
+    def _fetch_user_prs_fallback(
+        self, repo, target_username: str, start_dt: datetime, end_dt: datetime
+    ) -> List[Dict]:
         """Fallback method using the original approach."""
         print("Using fallback method - this may be slower...")
 
-        # Get all PRs (open and closed) created by the user
-        prs = repo.get_pulls(state='all', sort='created', direction='desc')
+        prs = repo.get_pulls(state="all", sort="created", direction="desc")
 
         user_prs = []
         processed_count = 0
 
         for pr in prs:
             processed_count += 1
-            if processed_count % 50 == 0:  # Less frequent updates for fallback
+            if processed_count % 50 == 0:
                 print(f"Processed {processed_count} PRs...")
 
-            # Check if PR is within date range
-            if pr.created_at < threshold_date:
+            if pr.created_at < start_dt:
                 break
-
-                # Check if PR was created by the target user
+            if pr.created_at > end_dt:
+                continue
             if pr.user.login != target_username:
                 continue
 
@@ -306,72 +368,69 @@ class PRAnalyzer:
         return filename
 
 
-def main():
+def main(
+    *,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    days: Optional[int] = None,
+) -> Optional[str]:
     """Main function to run the PR analyzer."""
-    # Get configuration from environment variables
-    github_token = os.getenv('GITHUB_TOKEN')
-    repo_name = os.getenv('GITHUB_REPO')
-    github_username = os.getenv(
-        'GITHUB_USERNAME')  # Optional: specific username to search for
-    days_str = os.getenv('DAYS', '14')  # Default to 14 days if not specified
+    github_token = os.getenv("GITHUB_TOKEN")
+    repo_name = os.getenv("GITHUB_REPO")
+    github_username = os.getenv("GITHUB_USERNAME")
 
     if not github_token:
         print("Error: GITHUB_TOKEN environment variable is required.")
         print(
             "Please set it in a .env file or export it as an environment variable."
         )
-        return
+        return None
 
     if not repo_name:
         print("Error: GITHUB_REPO environment variable is required.")
         print(
             "Please set it in the format 'owner/repository' (e.g., 'facebook/react')."
         )
-        return
+        return None
 
-    # Parse and validate days parameter
     try:
-        days = int(days_str)
-        if days <= 0:
-            print("Error: DAYS must be a positive integer.")
-            return
-        if days > 730:  # More than 2 years
+        start_d, end_d, _ = resolve_fetch_range(days=days, start=start, end=end)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return None
+
+    if days is None and not (start or os.getenv("START_DATE")):
+        days = int(os.getenv("DAYS", "14"))
+        if days > 730:
             print(
                 "Warning: Searching for more than 730 days (2 years) may take a very long time."
             )
             response = input("Continue? (y/N): ").lower().strip()
-            if response != 'y':
-                return
-    except ValueError:
-        print(f"Error: DAYS must be a valid integer, got '{days_str}'.")
-        return
+            if response != "y":
+                return None
 
     try:
-        # Initialize analyzer
         analyzer = PRAnalyzer(github_token)
 
-        # Show which user we're searching for and time range
         target_user = github_username or analyzer.user.login
         print(f"Searching for PRs created by: {target_user}")
-        print(f"Time range: Past {days} day(s)")
+        print(f"Date range: {start_d.isoformat()} to {end_d.isoformat()}")
 
-        # Fetch PRs
-        prs = analyzer.fetch_user_prs(repo_name, github_username, days)
+        prs = analyzer.fetch_user_prs(
+            repo_name,
+            github_username,
+            days=days,
+            start=start,
+            end=end,
+        )
 
         if not prs:
             print("No PRs found matching the criteria.")
             return None
 
-        # Calculate date range for filename
-        from datetime import datetime, timezone, timedelta
-        end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=days)
-
-        start_str = start_date.strftime('%Y-%m-%d')
-        end_str = end_date.strftime('%Y-%m-%d')
-
-        # Export to detailed CSV with date range in filename to output folder
-        filename = f'output/pr_{start_str}_{end_str}_detailed.csv'
+        start_str = start_d.strftime("%Y-%m-%d")
+        end_str = end_d.strftime("%Y-%m-%d")
+        filename = f"output/pr_{start_str}_{end_str}_detailed.csv"
         csv_file = analyzer.export_to_csv(prs, filename)
 
         # Print summary
@@ -392,4 +451,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Fetch GitHub PRs to CSV")
+    parser.add_argument("--start", help="Start date (YYYY-MM-DD), inclusive")
+    parser.add_argument("--end", help="End date (YYYY-MM-DD), inclusive")
+    parser.add_argument(
+        "--days",
+        type=int,
+        help="Past N days (ignored if --start/--end set; default: DAYS env or 14)",
+    )
+    cli = parser.parse_args()
+    main(start=cli.start, end=cli.end, days=cli.days)

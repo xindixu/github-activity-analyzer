@@ -57,8 +57,10 @@ GITHUB_TOKEN=your_personal_access_token_here
 GITHUB_REPO=owner/repository
 GITHUB_USERNAME=your_username  # Optional: specific user to search for
 
-# Time Range (optional)
-DAYS=14  # Default: 14 days
+# Time range (pick one)
+DAYS=14  # Past N days from today (default)
+# START_DATE=2026-05-04  # Explicit range (both required; overrides DAYS)
+# END_DATE=2026-05-08
 
 # AI Configuration (for summarization)
 OPENAI_API_KEY=your_openai_api_key_here
@@ -95,13 +97,19 @@ python main.py all            # fetch + all reports (no publish)
 Steps 2–4 check for `_detailed.csv` and `_summarized.csv`. If either is missing, they automatically run `fetch` first.
 
 ```bash
-# Custom time range (applies to fetch / ship)
+# Past N days (relative to today)
 DAYS=7 python main.py ship
+
+# Explicit date range (inclusive)
+python main.py ship --start 2026-05-04 --end 2026-05-08
+
+# Same via .env
+START_DATE=2026-05-04 END_DATE=2026-05-08 python main.py fetch
 
 # Publish and push
 python main.py publish --push
 
-# Target a specific run
+# Re-run reports for an existing CSV (skips fetch)
 python main.py by-project --csv output/pr_2026-05-04_2026-05-08_detailed.csv
 ```
 
