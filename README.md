@@ -4,7 +4,8 @@
 
 ## ✨ Features
 
-- **📊 Complete Workflow**: Fetches PRs and generates AI analysis in one command
+- **📊 Pipeline Commands**: Fetch, by-project, technical, and perf-review as separate steps
+- **🔄 Auto-fetch**: Report commands re-run `fetch` if CSVs are missing
 - **🤖 AI-Powered Insights**: Uses OpenAI to generate concise summaries and comprehensive pattern analysis
 - **📁 Project Categorization**: Extracts project names from PR titles (`[CS-1234] ProjectName: description`)
 - **📝 Professional Reports**: Generates beautiful markdown reports perfect for performance reviews
@@ -22,7 +23,9 @@ pr/
 ├── output/
 │   ├── pr_YYYY-MM-DD_YYYY-MM-DD_detailed.csv    # Raw PR data
 │   ├── pr_YYYY-MM-DD_YYYY-MM-DD_summarized.csv  # With AI summaries
-│   └── pr_YYYY-MM-DD_YYYY-MM-DD_summary.md      # Markdown analysis report
+│   ├── pr_YYYY-MM-DD_YYYY-MM-DD_by_project.md
+│   ├── pr_YYYY-MM-DD_YYYY-MM-DD_technical_highlights.md
+│   └── pr_YYYY-MM-DD_YYYY-MM-DD_perf_review.md
 ├── main.py                                      # Complete workflow entry point
 ├── requirements.txt                             # Dependencies
 ├── .env.example                                 # Configuration template
@@ -72,24 +75,45 @@ OPENAI_API_KEY=your_openai_api_key_here
 2. Create a new API key
 3. Copy the key (keep it secure!)
 
-### 3. Run Complete Analysis
+### 3. Run the pipeline
 
 ```bash
-# Analyze last 14 days (default)
+# Default: fetch + by-project + technical + publish to pr-reports
 python main.py
+# same as:
+python main.py ship
 
-# Custom time range
-DAYS=30 python main.py
-
-# Last 7 days
-DAYS=7 python main.py
+# Or run steps individually:
+python main.py fetch          # → _detailed.csv + _summarized.csv
+python main.py by-project     # → _by_project.md
+python main.py technical      # → _technical_highlights.md
+python main.py perf-review    # → _perf_review.md
+python main.py publish        # → commit in pr-reports clone
+python main.py all            # fetch + all reports (no publish)
 ```
 
-This will:
-1. 📊 Fetch all your PRs from the specified time range
-2. 🤖 Generate AI summaries for each PR
-3. 🔍 Analyze patterns and categorize by project
-4. 📝 Create a professional markdown report
+Steps 2–4 check for `_detailed.csv` and `_summarized.csv`. If either is missing, they automatically run `fetch` first.
+
+```bash
+# Custom time range (applies to fetch / ship)
+DAYS=7 python main.py ship
+
+# Publish and push
+python main.py publish --push
+
+# Target a specific run
+python main.py by-project --csv output/pr_2026-05-04_2026-05-08_detailed.csv
+```
+
+| Command | What it does |
+|---------|----------------|
+| `fetch` | GitHub → `_detailed.csv`, `_summarized.csv` |
+| `by-project` | `_summarized.csv` → `_by_project.md` |
+| `technical` | `_detailed.csv` → `_technical_highlights.md` |
+| `perf-review` | `_summarized.csv` → `_perf_review.md` |
+| `publish` | Copy `output/{prefix}*` to `PR_REPORTS_DIR` and commit |
+| `all` | `fetch` + all three reports (no publish) |
+| `ship` | `fetch` + `by-project` + `technical` + `publish` |
 
 ## 📊 Output Files
 
@@ -110,7 +134,9 @@ Raw PR data with clean descriptions:
 All detailed data plus:
 - `ai_summary` - Concise AI-generated summary of each PR
 
-### 3. **Analysis Report** (`pr_YYYY-MM-DD_YYYY-MM-DD_summary.md`)
+### 3. **Reports** (markdown)
+
+#### `_perf_review.md`
 Professional markdown report with:
 - **📊 Executive Summary**: Period, totals, averages
 - **🎯 Project Focus & Impact**: Which projects got the most attention
@@ -142,10 +168,28 @@ PRs that don't match this pattern are categorized as "Uncategorized" and handled
 # Just fetch PR data
 python src/github_pr_fetcher.py
 
-# Just run AI analysis on existing CSV
-python src/pr_summarizer.py
-python src/pr_summarizer.py output/specific_file.csv
+# Same commands via pr_summarizer directly
+python src/pr_summarizer.py fetch
+python src/pr_summarizer.py ship
+python src/pr_summarizer.py publish
+python src/pr_summarizer.py all
+
+# Publish the latest (or a specific) output run to pr-reports
+python src/publish_reports.py
+python src/publish_reports.py --prefix pr_2026-05-09_2026-05-16 --push
 ```
+
+### Publish to `pr-reports`
+
+Set `PR_REPORTS_DIR` in `.env` to your local clone of [pr-reports](https://github.com/xindixu/pr-reports), then:
+
+```bash
+python main.py publish
+python main.py ship          # includes publish
+python main.py publish --push
+```
+
+Copies every file matching the run prefix (CSVs and all report markdown files).
 
 ### Time Range Options
 

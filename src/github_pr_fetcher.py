@@ -8,8 +8,10 @@ filters out unimportant ones, and exports the data to CSV.
 import os
 import csv
 import re
+import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict
+from typing import Callable, List, Dict, TypeVar
+
 from github import Github
 from dotenv import load_dotenv
 import pandas as pd
@@ -17,13 +19,55 @@ import pandas as pd
 # Load environment variables
 load_dotenv()
 
+T = TypeVar("T")
+
+# Seconds between per-PR API calls (reduces ephemeral port exhaustion)
+FETCH_DELAY_SEC = float(os.getenv("GITHUB_FETCH_DELAY", "0.3"))
+
+
+def retry_github(
+    fn: Callable[[], T],
+    *,
+    label: str = "GitHub API",
+    max_attempts: int = 6,
+    base_delay: float = 2.0,
+) -> T:
+    """Retry on transient network / port exhaustion errors (e.g. macOS errno 49)."""
+    last_error: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_error = e
+            err = str(e).lower()
+            transient = any(
+                token in err
+                for token in (
+                    "errno 49",
+                    "can't assign requested address",
+                    "connection",
+                    "timed out",
+                    "max retries exceeded",
+                    "temporarily unavailable",
+                )
+            )
+            if not transient or attempt == max_attempts - 1:
+                raise
+            delay = base_delay * (2**attempt)
+            print(
+                f"⚠️  {label} failed ({e!s:.120}); "
+                f"retrying in {delay:.0f}s ({attempt + 1}/{max_attempts})..."
+            )
+            time.sleep(delay)
+    raise last_error  # pragma: no cover
+
 
 class PRAnalyzer:
 
     def __init__(self, github_token: str):
         """Initialize the PR analyzer with GitHub token."""
         self.github = Github(github_token)
-        self.user = self.github.get_user()
+        self.user = retry_github(lambda: self.github.get_user(), label="get_user")
 
     def get_pr_attachments(self, pr) -> List[str]:
         """Extract attachment URLs from PR body."""

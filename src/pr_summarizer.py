@@ -1,66 +1,95 @@
 #!/usr/bin/env python3
 """
-GitHub PR Summarizer
-Uses OpenAI to generate concise summaries of PR descriptions and analyze patterns.
+GitHub PR Summarizer — pipeline steps:
+
+  fetch        Per-PR summaries → _detailed.csv + _summarized.csv
+  by-project   _summarized.csv → _by_project.md
+  technical    _detailed.csv → _technical_highlights.md
+  perf-review  _summarized.csv → _perf_review.md
 """
 
-import os
-import sys
-import pandas as pd
-import json
+from __future__ import annotations
+
 import argparse
-from typing import Dict, List, Optional
+import os
+import re
+import sys
+import time
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
+
+PROJECT_PATTERN = re.compile(r"\[[^\]]+\]\s*([^:]+):")
 
 
 class PRSummarizer:
 
     def __init__(self):
-        """Initialize the summarizer with OpenAI."""
         self.client = None
         self.model = None
         self._setup_openai()
 
     def _setup_openai(self):
-        """Setup OpenAI client."""
         try:
             import openai
-            api_key = os.getenv('OPENAI_API_KEY')
+
+            api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
-                raise ValueError(
-                    "OPENAI_API_KEY environment variable required")
+                raise ValueError("OPENAI_API_KEY environment variable required")
             self.client = openai.OpenAI(api_key=api_key)
-            self.model = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+            self.model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
             print(f"✅ OpenAI client initialized with model: {self.model}")
         except ImportError:
             print("❌ OpenAI library not installed. Run: pip install openai")
             sys.exit(1)
 
-    def _call_openai(self, prompt: str, max_tokens: int = 150) -> str:
-        """Call OpenAI API."""
+    def _call_openai(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 150,
+        system: str | None = None,
+    ) -> str:
+        system_content = system or (
+            "You are a helpful assistant that summarizes GitHub pull requests "
+            "concisely and accurately."
+        )
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[{
-                    "role":
-                    "system",
-                    "content":
-                    "You are a helpful assistant that summarizes GitHub pull requests concisely and accurately."
-                }, {
-                    "role": "user",
-                    "content": prompt
-                }],
+                messages=[
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": prompt},
+                ],
                 max_tokens=max_tokens,
-                temperature=0.3)
+                temperature=0.3,
+            )
             return response.choices[0].message.content.strip()
         except Exception as e:
             return f"Error: {str(e)}"
 
+    @staticmethod
+    def extract_project_from_title(title: str) -> str:
+        match = PROJECT_PATTERN.search(title)
+        if match:
+            return match.group(1).strip()
+        return "Uncategorized"
+
+    @staticmethod
+    def group_prs_by_project(pr_data: List[Dict]) -> Dict[str, List[Dict]]:
+        projects: Dict[str, List[Dict]] = defaultdict(list)
+        for pr in pr_data:
+            projects[PRSummarizer.extract_project_from_title(pr["title"])].append(pr)
+        return dict(
+            sorted(projects.items(), key=lambda item: len(item[1]), reverse=True)
+        )
+
     def summarize_pr(self, title: str, description: str) -> str:
-        """Generate a concise summary of a single PR."""
         prompt = f"""Summarize this GitHub pull request in 1-2 concise sentences. Focus on what was changed and why.
 
 Title: {title}
@@ -68,60 +97,28 @@ Title: {title}
 Description: {description}
 
 Summary:"""
-
         return self._call_openai(prompt)
 
-    def extract_project_from_title(self, title: str) -> str:
-        """Extract project key from PR title format: [xxx-xxx] <project key>: xxx"""
-        import re
-
-        # Match pattern: [ticket] project: description
-        # Examples: [CS-6304] Roles: something, [CS-0000] Roles: something
-        pattern = r'\[([^\]]+)\]\s*([^:]+):'
-        match = re.match(pattern, title)
-
-        if match:
-            ticket_id = match.group(1)
-            project_key = match.group(2).strip()
-            return project_key
-
-        # Fallback: try to extract just the project name after ]
-        fallback_pattern = r'\][^:]*?([A-Za-z][A-Za-z\s]+?):'
-        fallback_match = re.search(fallback_pattern, title)
-        if fallback_match:
-            return fallback_match.group(1).strip()
-
-        return "Uncategorized"
-
     def analyze_pr_patterns(self, pr_data: List[Dict]) -> str:
-        """Analyze patterns across multiple PRs with project categorization."""
-        # Extract project information and group PRs
-        projects = {}
-        for pr in pr_data:
-            project = self.extract_project_from_title(pr['title'])
-            if project not in projects:
-                projects[project] = []
-            projects[project].append(pr)
+        projects = self.group_prs_by_project(pr_data)
 
-        # Build project breakdown
         project_breakdown = []
         for project, prs in projects.items():
-            total_lines = sum(pr.get('lines_of_code_changes', 0) for pr in prs)
+            total_lines = sum(pr.get("lines_of_code_changes", 0) for pr in prs)
             project_breakdown.append(
-                f"• {project}: {len(prs)} PRs, {total_lines} lines changed")
+                f"• {project}: {len(prs)} PRs, {total_lines} lines changed"
+            )
 
-        # Combine summaries for AI analysis (limit to avoid token limits)
         combined_summaries = "\n".join([
-            f"• [{self.extract_project_from_title(pr['title'])}] {pr.get('ai_summary', 'No summary')}"
+            f"• [{self.extract_project_from_title(pr['title'])}] "
+            f"{pr.get('ai_summary', 'No summary')}"
             for pr in pr_data[:20]
         ])
-
-        project_breakdown_text = "\n".join(project_breakdown)
 
         prompt = f"""Analyze these GitHub PR summaries and provide a comprehensive development activity report:
 
 PROJECT BREAKDOWN:
-{project_breakdown_text}
+{chr(10).join(project_breakdown)}
 
 PR SUMMARIES BY PROJECT:
 {combined_summaries}
@@ -129,193 +126,467 @@ PR SUMMARIES BY PROJECT:
 Provide a detailed analysis covering:
 
 1. **PROJECT FOCUS & IMPACT**
-   - Which projects received the most attention and why
-   - Relative impact based on lines changed and complexity
-   - Project priorities and strategic focus areas
-
 2. **TECHNICAL THEMES & PATTERNS**
-   - Major technical initiatives (performance, security, infrastructure, features)
-   - Architecture improvements and system optimizations
-   - Testing and development workflow enhancements
-
 3. **DEVELOPMENT VELOCITY & SCALE**
-   - Distribution of effort across different types of work
-   - Balance between feature development vs. bug fixes vs. maintenance
-   - Code review and iteration patterns (based on PR descriptions)
-
 4. **CROSS-PROJECT INSIGHTS**
-   - Common technologies or approaches used across projects
-   - Shared challenges or recurring themes
-   - Dependencies or relationships between different projects
-
 5. **KEY ACCOMPLISHMENTS & TRENDS**
-   - Most significant changes or achievements
-   - Quality improvements and technical debt reduction
-   - Innovation or new capabilities introduced
 
-Provide specific examples and quantify impact where possible. Focus on actionable insights for performance reviews and project planning.
+Focus on actionable insights for performance reviews and project planning.
 
 Analysis:"""
 
         return self._call_openai(prompt, max_tokens=800)
 
+    def summarize_project_progress(self, project: str, prs: List[Dict]) -> str:
+        pr_lines = []
+        for pr in prs:
+            desc = (pr.get("description") or "").strip()
+            if not desc or desc == "No meaningful description available":
+                desc = "(title only)"
+            else:
+                desc = desc[:400] + ("…" if len(desc) > 400 else "")
+            summary = pr.get("ai_summary", "")
+            if summary and summary != "No summary":
+                desc = f"{desc}\n  Summary: {summary[:200]}"
+            pr_lines.append(
+                f"- {pr['title']} ({pr.get('lines_of_code_changes', 0)} lines)\n  {desc}"
+            )
 
-def process_pr_csv(csv_file: str, output_file: str = None) -> str:
-    """Process a CSV file of PRs and generate summaries."""
-    # Load PR data
-    try:
-        df = pd.read_csv(csv_file)
-        print(f"📊 Loaded {len(df)} PRs from {csv_file}")
-    except Exception as e:
-        print(f"❌ Error loading CSV: {e}")
-        return None
+        prompt = f"""Summarize progress in this project area as 3–6 concise bullet points.
+Focus on what shipped and the impact. Use markdown bullets (- ). No intro paragraph.
 
-    # Initialize summarizer
+Project: {project}
+PR count: {len(prs)}
+
+PRs:
+{chr(10).join(pr_lines)}
+
+Progress bullets:"""
+
+        return self._call_openai(
+            prompt,
+            max_tokens=350,
+            system="You write concise engineering progress summaries grouped by project.",
+        )
+
+    def summarize_technical_highlight(
+        self, title: str, description: str, pr_url: str
+    ) -> Optional[str]:
+        desc = (description or "").strip()
+        if not desc or desc == "No meaningful description available":
+            desc = "(no PR body — infer from title only if clearly technical)"
+
+        prompt = f"""Review this pull request for interesting technical details worth sharing with senior engineers.
+
+If there are NO substantive technical details (only trivial CSS tweaks, copy changes, config one-liners, or vague descriptions), respond with exactly:
+SKIP
+
+Otherwise write 2–4 concise bullet points on interesting technical work (architecture, algorithms, performance, infra, tricky bugs). No generic fluff. Do not repeat the title.
+
+PR: {title}
+URL: {pr_url}
+
+Description:
+{desc}
+
+Technical bullets (or SKIP):"""
+
+        result = self._call_openai(
+            prompt,
+            max_tokens=280,
+            system=(
+                "You highlight non-obvious technical implementation details in PRs. "
+                "Skip routine or low-signal changes."
+            ),
+        )
+
+        if not result or result.strip().upper() == "SKIP" or result.startswith("SKIP"):
+            return None
+        if "Error:" in result:
+            return result
+        return result
+
+    def generate_by_project_report(self, pr_data: List[Dict]) -> str:
+        projects = self.group_prs_by_project(pr_data)
+        sections: List[str] = []
+
+        for project, prs in projects.items():
+            print(f"  • {project} ({len(prs)} PRs)...")
+            bullets = self.summarize_project_progress(project, prs)
+            sections.append(f"## {project}\n\n{bullets}\n")
+            time.sleep(0.1)
+
+        return "\n".join(sections)
+
+    def generate_technical_report(self, pr_data: List[Dict]) -> str:
+        sections: List[str] = []
+
+        for idx, pr in enumerate(pr_data, 1):
+            title = pr["title"]
+            print(f"  [{idx}/{len(pr_data)}] {title[:60]}...")
+            highlight = self.summarize_technical_highlight(
+                title,
+                pr.get("description", ""),
+                pr.get("pr_url", ""),
+            )
+            if highlight:
+                url = pr.get("pr_url", "")
+                link = f"**[{title}]({url})**" if url else f"**{title}**"
+                sections.append(f"### {link}\n\n{highlight}\n")
+            time.sleep(0.1)
+
+        if not sections:
+            return "_No PRs with substantive technical details in this period._\n"
+
+        return "\n---\n\n".join(sections) + "\n"
+
+
+def date_part_from_path(path: str) -> str:
+    base_name = os.path.basename(path)
+    if base_name.startswith("pr_") and base_name.endswith(".csv"):
+        date_part = base_name[3:-4]
+        for suffix in ("_detailed", "_summarized"):
+            if date_part.endswith(suffix):
+                date_part = date_part[: -len(suffix)]
+        return date_part
+    return os.path.splitext(base_name)[0]
+
+
+def paths_for_date_part(date_part: str) -> Dict[str, str]:
+    prefix = f"output/pr_{date_part}"
+    return {
+        "detailed": f"{prefix}_detailed.csv",
+        "summarized": f"{prefix}_summarized.csv",
+        "by_project": f"{prefix}_by_project.md",
+        "technical": f"{prefix}_technical_highlights.md",
+        "perf_review": f"{prefix}_perf_review.md",
+    }
+
+
+def paths_from_detailed(detailed_csv: str) -> Dict[str, str]:
+    return paths_for_date_part(date_part_from_path(detailed_csv))
+
+
+def auto_detect_detailed_csv() -> str:
+    output_dir = "output"
+    if not os.path.exists(output_dir):
+        raise FileNotFoundError("No output directory found. Run: python main.py fetch")
+
+    csv_files = [
+        f"{output_dir}/{f}"
+        for f in os.listdir(output_dir)
+        if f.startswith("pr_") and f.endswith("_detailed.csv")
+    ]
+    if not csv_files:
+        raise FileNotFoundError(
+            "No _detailed.csv found in output/. Run: python main.py fetch"
+        )
+
+    csv_files.sort(key=os.path.getmtime, reverse=True)
+    return csv_files[0]
+
+
+def csvs_ready(paths: Dict[str, str]) -> bool:
+    return os.path.isfile(paths["detailed"]) and os.path.isfile(paths["summarized"])
+
+
+def write_report_header(
+    f, df: pd.DataFrame, date_part: str, *, title: str, subtitle: str
+):
+    date_range = date_part.replace("_", " – ")
+    repo = os.getenv("GITHUB_REPO", "")
+
+    f.write(f"# {title}\n\n")
+    if repo:
+        f.write(f"**Repo:** {repo}  \n")
+    f.write(f"**Period:** {date_range}  \n")
+    f.write(f"**Total PRs:** {len(df)}  \n")
+    f.write(f"**Total Lines Changed:** {df['lines_of_code_changes'].sum():,}  \n")
+    f.write(
+        f"**Average Lines per PR:** {df['lines_of_code_changes'].mean():.1f}  \n\n"
+    )
+    f.write(f"{subtitle}\n\n")
+    f.write("---\n\n")
+
+
+def cmd_fetch_summarize(detailed_csv: str | None = None) -> Tuple[str, str]:
+    """Fetch PRs and add per-PR ai_summary → detailed + summarized CSVs."""
+    if detailed_csv and os.path.isfile(detailed_csv):
+        paths = paths_from_detailed(detailed_csv)
+        print(f"📂 Using existing detailed CSV: {paths['detailed']}")
+    else:
+        from github_pr_fetcher import main as fetch_prs
+
+        print("📊 Fetching PRs from GitHub...")
+        fetched = fetch_prs()
+        if not fetched:
+            raise RuntimeError("PR fetching failed")
+        paths = paths_from_detailed(fetched)
+        detailed_csv = paths["detailed"]
+        print(f"✅ PR data saved to: {detailed_csv}")
+
+    df = pd.read_csv(paths["detailed"])
+    print(f"📊 Loaded {len(df)} PRs")
+
+    if "ai_summary" in df.columns and df["ai_summary"].notna().all():
+        print("ℹ️  Per-PR summaries already present; refreshing summarized CSV.")
+    else:
+        summarizer = PRSummarizer()
+        print("🤖 Generating per-PR summaries...")
+        summaries = []
+        for idx, row in df.iterrows():
+            print(f"  PR {idx + 1}/{len(df)}: {row['title'][:50]}...")
+            summaries.append(summarizer.summarize_pr(row["title"], row["description"]))
+            time.sleep(0.1)
+        df = df.copy()
+        df["ai_summary"] = summaries
+
+    os.makedirs("output", exist_ok=True)
+    df.to_csv(paths["summarized"], index=False)
+    print(f"💾 Saved summarized data to {paths['summarized']}")
+
+    return paths["detailed"], paths["summarized"]
+
+
+def ensure_csvs(detailed_csv: str | None = None) -> Dict[str, str]:
+    """Ensure _detailed.csv and _summarized.csv exist; run fetch if not."""
+    if detailed_csv:
+        paths = paths_from_detailed(detailed_csv)
+    else:
+        try:
+            detailed_csv = auto_detect_detailed_csv()
+            paths = paths_from_detailed(detailed_csv)
+        except FileNotFoundError:
+            paths = None
+
+    if paths and csvs_ready(paths):
+        print(f"📂 Using {paths['detailed']}")
+        return paths
+
+    print("⚠️  Missing _detailed.csv or _summarized.csv — running fetch...")
+    detailed, _ = cmd_fetch_summarize(detailed_csv)
+    return paths_from_detailed(detailed)
+
+
+def cmd_by_project(detailed_csv: str | None = None) -> str:
+    paths = ensure_csvs(detailed_csv)
+    df = pd.read_csv(paths["summarized"])
+    date_part = date_part_from_path(paths["summarized"])
+
     summarizer = PRSummarizer()
+    print("📂 Summarizing by project area...")
+    body = summarizer.generate_by_project_report(df.to_dict("records"))
 
-    # Generate summaries
-    print("🤖 Generating AI summaries...")
-    summaries = []
-
-    for idx, row in df.iterrows():
-        print(f"Processing PR {idx + 1}/{len(df)}: {row['title'][:50]}...")
-
-        summary = summarizer.summarize_pr(row['title'], row['description'])
-        summaries.append(summary)
-
-        # Add a small delay to respect API rate limits
-        import time
-        time.sleep(0.1)
-
-    # Add summaries to dataframe
-    df['ai_summary'] = summaries
-
-    # Generate pattern analysis
-    print("🔍 Analyzing patterns...")
-    # Convert DataFrame to list of dictionaries for analysis
-    pr_data_list = df.to_dict('records')
-    pattern_analysis = summarizer.analyze_pr_patterns(pr_data_list)
-
-    # Ensure output directory exists
-    import os
-    os.makedirs('output', exist_ok=True)
-
-    # Save results with new naming format
-    if not output_file:
-        # Extract date range from filename (pr_YYYY-MM-DD_YYYY-MM-DD.csv)
-        base_name = os.path.basename(csv_file)
-        if base_name.startswith('pr_') and base_name.endswith('.csv'):
-            # Extract date range from filename, removing any suffix like '_detailed'
-            date_part = base_name[3:-4]  # Remove 'pr_' and '.csv'
-            # Remove '_detailed' suffix if present
-            if date_part.endswith('_detailed'):
-                date_part = date_part[:-9]  # Remove '_detailed'
-            output_file = f"output/pr_{date_part}_summarized.csv"
-        else:
-            # Fallback to old naming
-            base_name = os.path.splitext(csv_file)[0]
-            output_file = f"{base_name}_summarized.csv"
-
-    df.to_csv(output_file, index=False)
-    print(f"💾 Saved summarized data to {output_file}")
-
-    # Save pattern analysis with new naming format as markdown
-    analysis_file = output_file.replace('_summarized.csv', '_summary.md')
-    with open(analysis_file, 'w') as f:
-        # Extract date range for title
-        base_name = os.path.basename(output_file)
-        if 'pr_' in base_name:
-            date_part = base_name.replace('pr_',
-                                          '').replace('_summarized.csv', '')
-            date_range = date_part.replace('_', ' to ')
-        else:
-            date_range = "Development Period"
-
-        f.write(f"# GitHub PR Analysis Report\n\n")
-        f.write(f"**Period:** {date_range}  \n")
-        f.write(f"**Total PRs:** {len(df)}  \n")
-        f.write(
-            f"**Total Lines Changed:** {df['lines_of_code_changes'].sum():,}  \n"
+    with open(paths["by_project"], "w") as f:
+        write_report_header(
+            f,
+            df,
+            date_part,
+            title="PRs by Project Area",
+            subtitle="*Progress summary per project area*",
         )
-        f.write(
-            f"**Average Lines per PR:** {df['lines_of_code_changes'].mean():.1f}  \n\n"
-        )
+        f.write(body)
 
-        f.write("---\n\n")
-        f.write("## 📊 Development Activity Analysis\n\n")
+    print(f"📝 Saved report to {paths['by_project']}")
+    return paths["by_project"]
+
+
+def cmd_technical(detailed_csv: str | None = None) -> str:
+    paths = ensure_csvs(detailed_csv)
+    df = pd.read_csv(paths["detailed"])
+    date_part = date_part_from_path(paths["detailed"])
+
+    summarizer = PRSummarizer()
+    print("🔬 Extracting technical highlights...")
+    body = summarizer.generate_technical_report(df.to_dict("records"))
+
+    with open(paths["technical"], "w") as f:
+        write_report_header(
+            f,
+            df,
+            date_part,
+            title="Technical Highlights",
+            subtitle="*Interesting implementation details only*",
+        )
+        f.write(body)
+
+    print(f"📝 Saved report to {paths['technical']}")
+    return paths["technical"]
+
+
+def cmd_perf_review(detailed_csv: str | None = None) -> str:
+    paths = ensure_csvs(detailed_csv)
+    df = pd.read_csv(paths["summarized"])
+    date_part = date_part_from_path(paths["summarized"])
+
+    if "ai_summary" not in df.columns:
+        raise ValueError("summarized CSV missing ai_summary; run: python main.py fetch")
+
+    summarizer = PRSummarizer()
+    print("🔍 Analyzing patterns for performance review...")
+    pattern_analysis = summarizer.analyze_pr_patterns(df.to_dict("records"))
+
+    with open(paths["perf_review"], "w") as f:
+        write_report_header(
+            f,
+            df,
+            date_part,
+            title="GitHub PR Performance Review",
+            subtitle="*Development activity analysis for performance reviews*",
+        )
+        f.write("## Development Activity Analysis\n\n")
         f.write(pattern_analysis)
-        f.write("\n\n---\n\n")
-        f.write("## 📋 Individual PR Summaries\n\n")
+        f.write("\n\n---\n\n## Individual PR Summaries\n\n")
 
         for idx, (_, row) in enumerate(df.iterrows()):
-            # Extract project from title for better organization
-            project = "Uncategorized"
-            import re
-            pattern = r'\[([^\]]+)\]\s*([^:]+):'
-            match = re.match(pattern, row['title'])
-            if match:
-                project = match.group(2).strip()
+            project = summarizer.extract_project_from_title(row["title"])
+            merged = row["merged"] is True or str(row["merged"]).lower() == "true"
+            status_icon = "✅" if merged else "🔄" if row["state"] == "open" else "❌"
 
             f.write(f"### {idx + 1}. {row['title']}\n\n")
             f.write(f"**Project:** `{project}`  \n")
             f.write(
-                f"**Lines Changed:** {row['lines_of_code_changes']} (+{row['additions']}, -{row['deletions']})  \n"
+                f"**Lines Changed:** {row['lines_of_code_changes']} "
+                f"(+{row['additions']}, -{row['deletions']})  \n"
             )
-            f.write(
-                f"**Status:** {row['state'].title()} {'✅' if row['merged'] == True else '🔄' if row['state'] == 'open' else '❌'}  \n"
-            )
+            f.write(f"**Status:** {row['state'].title()} {status_icon}  \n")
             f.write(f"**URL:** {row['pr_url']}\n\n")
             f.write(f"**Summary:** {row['ai_summary']}\n\n")
             f.write("---\n\n")
 
-    print(f"📝 Saved pattern analysis to {analysis_file}")
-
-    # Print quick summary
+    print(f"📝 Saved report to {paths['perf_review']}")
     print("\n🎯 QUICK ANALYSIS")
     print("=" * 50)
     print(pattern_analysis)
 
-    return output_file
+    return paths["perf_review"]
 
 
-def main():
+def cmd_all(detailed_csv: str | None = None) -> str:
+    """Fetch + all report types (including perf-review). Does not publish."""
+    detailed, _ = cmd_fetch_summarize(detailed_csv)
+    cmd_by_project(detailed)
+    cmd_technical(detailed)
+    cmd_perf_review(detailed)
+    return detailed
+
+
+def cmd_publish(detailed_csv: str | None = None, *, push: bool = False) -> bool:
+    """Copy output artifacts to pr-reports and commit."""
+    from publish_reports import publish, prefix_from_csv
+
+    if detailed_csv:
+        prefix = prefix_from_csv(Path(detailed_csv))
+    else:
+        from publish_reports import latest_prefix
+
+        prefix = latest_prefix()
+
+    if not os.getenv("PR_REPORTS_DIR"):
+        raise ValueError(
+            "PR_REPORTS_DIR is not set in .env — required for publish"
+        )
+
+    print("📤 Publishing reports to pr-reports...")
+    return publish(prefix, push=push)
+
+
+def cmd_ship(detailed_csv: str | None = None, *, push: bool = False) -> str:
+    """Fetch, by-project, technical, then publish to pr-reports."""
+    detailed, _ = cmd_fetch_summarize(detailed_csv)
+    cmd_by_project(detailed)
+    cmd_technical(detailed)
+    cmd_publish(detailed, push=push)
+    return detailed
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description='Summarize GitHub PRs using OpenAI')
-    parser.add_argument('csv_file', nargs='?', help='CSV file to process')
-    parser.add_argument('--output', help='Output file name')
+        description="GitHub PR Analytics — fetch and generate reports",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""commands:
+  fetch         Fetch PRs + per-PR summaries → _detailed.csv, _summarized.csv
+  by-project    _summarized.csv → _by_project.md (runs fetch if CSVs missing)
+  technical     _detailed.csv → _technical_highlights.md (runs fetch if missing)
+  perf-review   _summarized.csv → _perf_review.md (runs fetch if missing)
+  publish       Copy output/ to pr-reports repo and commit
+  all           fetch + by-project + technical + perf-review
+  ship          fetch + by-project + technical + publish (default)
 
-    args = parser.parse_args()
+Examples:
+  python main.py fetch
+  python main.py ship
+  python main.py publish --push
+  python main.py all --csv output/pr_2026-05-04_2026-05-08_detailed.csv
+""",
+    )
+    parser.add_argument(
+        "command",
+        choices=[
+            "fetch",
+            "by-project",
+            "technical",
+            "perf-review",
+            "publish",
+            "all",
+            "ship",
+        ],
+        help="Pipeline step to run",
+    )
+    parser.add_argument(
+        "--csv",
+        dest="detailed_csv",
+        help="Path to _detailed.csv (default: latest in output/)",
+    )
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="Push pr-reports after commit (publish/ship only)",
+    )
+    return parser
 
-    # Auto-detect CSV file if not provided
-    if not args.csv_file:
-        import os
-        output_dir = 'output'
-        if not os.path.exists(output_dir):
-            print("❌ No output directory found.")
-            print("Run the PR fetcher first to generate CSV data.")
-            sys.exit(1)
 
-        csv_files = [
-            f"{output_dir}/{f}" for f in os.listdir(output_dir)
-            if f.startswith('pr_') and f.endswith('.csv')
-            and 'summarized' not in f
-        ]
-        if not csv_files:
-            print("❌ No PR CSV files found in output directory.")
-            print("Run the PR fetcher first to generate CSV data.")
-            sys.exit(1)
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
-        # Use the most recent file
-        csv_files.sort(key=os.path.getmtime, reverse=True)
-        args.csv_file = csv_files[0]
-        print(f"🔍 Auto-detected CSV file: {args.csv_file}")
-
-    # Process the file
-    result_file = process_pr_csv(args.csv_file, args.output)
-
-    if result_file:
-        print(f"\n✅ Summary complete! Check {result_file}")
+    try:
+        if args.command == "fetch":
+            detailed, summarized = cmd_fetch_summarize(args.detailed_csv)
+            print(f"\n✅ Done: {detailed}\n           {summarized}")
+        elif args.command == "by-project":
+            out = cmd_by_project(args.detailed_csv)
+            print(f"\n✅ Done: {out}")
+        elif args.command == "technical":
+            out = cmd_technical(args.detailed_csv)
+            print(f"\n✅ Done: {out}")
+        elif args.command == "perf-review":
+            out = cmd_perf_review(args.detailed_csv)
+            print(f"\n✅ Done: {out}")
+        elif args.command == "publish":
+            push = args.push or os.getenv("PUBLISH_PUSH", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            cmd_publish(args.detailed_csv, push=push)
+            print("\n✅ Published to pr-reports")
+        elif args.command == "all":
+            cmd_all(args.detailed_csv)
+            print("\n✅ All reports generated")
+        elif args.command == "ship":
+            push = args.push or os.getenv("PUBLISH_PUSH", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            cmd_ship(args.detailed_csv, push=push)
+            print("\n✅ Shipped: reports generated and published")
+        return 0
+    except Exception as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
