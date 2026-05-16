@@ -5,6 +5,7 @@
 ## ✨ Features
 
 - **📊 Complete Workflow**: Fetches PRs and generates AI analysis in one command
+- **🤖 Three Report Modes**: Performance review, by-project progress, or technical highlights
 - **🤖 AI-Powered Insights**: Uses OpenAI to generate concise summaries and comprehensive pattern analysis
 - **📁 Project Categorization**: Extracts project names from PR titles (`[CS-1234] ProjectName: description`)
 - **📝 Professional Reports**: Generates beautiful markdown reports perfect for performance reviews
@@ -83,13 +84,37 @@ DAYS=30 python main.py
 
 # Last 7 days
 DAYS=7 python main.py
+
+# By-project progress report
+python main.py --mode by-project
+
+# Technical highlights only
+python main.py --mode technical
 ```
 
 This will:
 1. 📊 Fetch all your PRs from the specified time range
-2. 🤖 Generate AI summaries for each PR
-3. 🔍 Analyze patterns and categorize by project
-4. 📝 Create a professional markdown report
+2. 🤖 Generate the selected report mode (see below)
+3. 📝 Write markdown (and CSV for `perf-review`) under `output/`
+
+### Summarize modes
+
+| Mode | Command | Output |
+|------|---------|--------|
+| Performance review | `python main.py` or `--mode perf-review` | `_summary.md`, `_summarized.csv` |
+| By project | `python main.py --mode by-project` | `_by_project.md` |
+| Technical highlights | `python main.py --mode technical` | `_technical_highlights.md` |
+
+Set default mode in `.env`: `SUMMARIZE_MODE=by-project`
+
+Run all three on the same fetched CSV:
+
+```bash
+python src/github_pr_fetcher.py   # once
+python src/pr_summarizer.py --mode perf-review
+python src/pr_summarizer.py --mode by-project
+python src/pr_summarizer.py --mode technical
+```
 
 ## 📊 Output Files
 
@@ -110,7 +135,15 @@ Raw PR data with clean descriptions:
 All detailed data plus:
 - `ai_summary` - Concise AI-generated summary of each PR
 
-### 3. **Analysis Report** (`pr_YYYY-MM-DD_YYYY-MM-DD_summary.md`)
+### 3. **Reports** (mode-dependent markdown)
+
+| Mode | Output file | Contents |
+|------|-------------|----------|
+| `perf-review` (default) | `_summary.md` + `_summarized.csv` | Pattern analysis + per-PR summaries |
+| `by-project` | `_by_project.md` | PRs grouped by project with progress bullets |
+| `technical` | `_technical_highlights.md` | Interesting technical details only |
+
+#### `perf-review` — `_summary.md`
 Professional markdown report with:
 - **📊 Executive Summary**: Period, totals, averages
 - **🎯 Project Focus & Impact**: Which projects got the most attention
@@ -143,9 +176,29 @@ PRs that don't match this pattern are categorized as "Uncategorized" and handled
 python src/github_pr_fetcher.py
 
 # Just run AI analysis on existing CSV
-python src/pr_summarizer.py
-python src/pr_summarizer.py output/specific_file.csv
+python src/pr_summarizer.py                              # perf-review (default)
+python src/pr_summarizer.py --mode by-project
+python src/pr_summarizer.py --mode technical
+python src/pr_summarizer.py output/specific_file.csv -m technical
+
+# Publish the latest (or a specific) output run to pr-reports
+python src/publish_reports.py
+python src/publish_reports.py --prefix pr_2026-05-09_2026-05-16 --push
 ```
+
+### Publish to `pr-reports`
+
+Set `PR_REPORTS_DIR` in `.env` to your local clone of [pr-reports](https://github.com/xindixu/pr-reports). After each successful `python main.py` run, matching files under `output/` are copied and committed automatically.
+
+```bash
+# One-off publish without re-running the analyzer
+python src/publish_reports.py --prefix pr_2026-05-09_2026-05-16
+
+# Also push to GitHub
+PUBLISH_PUSH=1 python src/publish_reports.py
+```
+
+Copies every file matching the run prefix (detailed/summarized CSV, summary markdown, `*_by_project.md`, `*_technical_highlights.md`, etc.).
 
 ### Time Range Options
 
