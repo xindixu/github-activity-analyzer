@@ -2,9 +2,10 @@
 """
 GitHub PR Summarizer — pipeline steps:
 
-  fetch        Per-PR summaries → _detailed.csv + _summarized.csv
-  by-project   _summarized.csv → _by_project.md
+  fetch        GitHub → _detailed.csv
+  summarize    _detailed.csv → _summarized.csv (per-PR ai_summary)
   technical    _detailed.csv → _technical_highlights.md
+  by-project   _summarized.csv → _by_project.md
   perf-review  _summarized.csv → _perf_review.md
 """
 
@@ -32,23 +33,25 @@ class PRSummarizer:
     def __init__(self):
         self.client = None
         self.model = None
-        self._setup_openai()
+        self._setup_anthropic()
 
-    def _setup_openai(self):
+    def _setup_anthropic(self):
         try:
-            import openai
+            from anthropic import Anthropic
 
-            api_key = os.getenv("OPENAI_API_KEY")
+            api_key = os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
-                raise ValueError("OPENAI_API_KEY environment variable required")
-            self.client = openai.OpenAI(api_key=api_key)
-            self.model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
-            print(f"✅ OpenAI client initialized with model: {self.model}")
+                raise ValueError("ANTHROPIC_API_KEY environment variable required")
+            self.client = Anthropic(api_key=api_key)
+            self.model = os.getenv(
+                "ANTHROPIC_MODEL", "claude-sonnet-4-20250514"
+            )
+            print(f"✅ Anthropic client initialized with model: {self.model}")
         except ImportError:
-            print("❌ OpenAI library not installed. Run: pip install openai")
+            print("❌ Anthropic library not installed. Run: pip install anthropic")
             sys.exit(1)
 
-    def _call_openai(
+    def _call_llm(
         self,
         prompt: str,
         *,
@@ -60,18 +63,20 @@ class PRSummarizer:
             "concisely and accurately."
         )
         try:
-            response = self.client.chat.completions.create(
+            response = self.client.messages.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": system_content},
-                    {"role": "user", "content": prompt},
-                ],
                 max_tokens=max_tokens,
-                temperature=0.3,
+                system=system_content,
+                messages=[{"role": "user", "content": prompt}],
             )
-            return response.choices[0].message.content.strip()
+            parts = [
+                block.text
+                for block in response.content
+                if block.type == "text"
+            ]
+            return "\n".join(parts).strip()
         except Exception as e:
-            return f"Error: {str(e)}"
+            return f"Error: {e}"
 
     @staticmethod
     def extract_project_from_title(title: str) -> str:
@@ -97,7 +102,7 @@ Title: {title}
 Description: {description}
 
 Summary:"""
-        return self._call_openai(prompt)
+        return self._call_llm(prompt)
 
     def analyze_pr_patterns(self, pr_data: List[Dict]) -> str:
         projects = self.group_prs_by_project(pr_data)
@@ -135,7 +140,7 @@ Focus on actionable insights for performance reviews and project planning.
 
 Analysis:"""
 
-        return self._call_openai(prompt, max_tokens=800)
+        return self._call_llm(prompt, max_tokens=800)
 
     def summarize_project_progress(self, project: str, prs: List[Dict]) -> str:
         pr_lines = []
@@ -163,7 +168,7 @@ PRs:
 
 Progress bullets:"""
 
-        return self._call_openai(
+        return self._call_llm(
             prompt,
             max_tokens=350,
             system="You write concise engineering progress summaries grouped by project.",
@@ -191,7 +196,7 @@ Description:
 
 Technical bullets (or SKIP):"""
 
-        result = self._call_openai(
+        result = self._call_llm(
             prompt,
             max_tokens=280,
             system=(
@@ -309,32 +314,50 @@ def write_report_header(
     f.write("---\n\n")
 
 
-def cmd_fetch_summarize(
+def cmd_fetch(
     detailed_csv: str | None = None,
     *,
     start: str | None = None,
     end: str | None = None,
     days: int | None = None,
-) -> Tuple[str, str]:
-    """Fetch PRs and add per-PR ai_summary → detailed + summarized CSVs."""
+) -> str:
+    """Fetch PRs from GitHub → _detailed.csv."""
     if detailed_csv and os.path.isfile(detailed_csv):
-        paths = paths_from_detailed(detailed_csv)
-        print(f"📂 Using existing detailed CSV: {paths['detailed']}")
-    else:
-        from github_pr_fetcher import main as fetch_prs
+        print(f"📂 Using existing detailed CSV: {detailed_csv}")
+        return detailed_csv
 
-        print("📊 Fetching PRs from GitHub...")
-        fetched = fetch_prs(start=start, end=end, days=days)
-        if not fetched:
-            raise RuntimeError("PR fetching failed")
-        paths = paths_from_detailed(fetched)
-        detailed_csv = paths["detailed"]
-        print(f"✅ PR data saved to: {detailed_csv}")
+    from github_pr_fetcher import main as fetch_prs
+
+    print("📊 Fetching PRs from GitHub...")
+    fetched = fetch_prs(start=start, end=end, days=days)
+    if not fetched:
+        raise RuntimeError("PR fetching failed")
+    print(f"✅ PR data saved to: {fetched}")
+    return fetched
+
+
+def cmd_summarize(
+    detailed_csv: str | None = None,
+    *,
+    force: bool = False,
+) -> Tuple[str, str]:
+    """Add per-PR ai_summary from _detailed.csv → _summarized.csv."""
+    if not detailed_csv:
+        detailed_csv = auto_detect_detailed_csv()
+    paths = paths_from_detailed(detailed_csv)
+    if not os.path.isfile(paths["detailed"]):
+        raise FileNotFoundError(
+            f"Detailed CSV not found: {paths['detailed']}. Run: python main.py fetch"
+        )
 
     df = pd.read_csv(paths["detailed"])
-    print(f"📊 Loaded {len(df)} PRs")
+    print(f"📊 Loaded {len(df)} PRs from {paths['detailed']}")
 
-    if "ai_summary" in df.columns and df["ai_summary"].notna().all():
+    if (
+        not force
+        and "ai_summary" in df.columns
+        and df["ai_summary"].notna().all()
+    ):
         print("ℹ️  Per-PR summaries already present; refreshing summarized CSV.")
     else:
         summarizer = PRSummarizer()
@@ -361,7 +384,7 @@ def ensure_csvs(
     end: str | None = None,
     days: int | None = None,
 ) -> Dict[str, str]:
-    """Ensure _detailed.csv and _summarized.csv exist; run fetch if not."""
+    """Ensure _detailed.csv and _summarized.csv exist; fetch and/or summarize as needed."""
     if detailed_csv:
         paths = paths_from_detailed(detailed_csv)
     else:
@@ -370,16 +393,22 @@ def ensure_csvs(
             paths = paths_from_detailed(detailed_csv)
         except FileNotFoundError:
             paths = None
+            detailed_csv = None
 
     if paths and csvs_ready(paths):
         print(f"📂 Using {paths['detailed']}")
         return paths
 
-    print("⚠️  Missing _detailed.csv or _summarized.csv — running fetch...")
-    detailed, _ = cmd_fetch_summarize(
-        detailed_csv, start=start, end=end, days=days
-    )
-    return paths_from_detailed(detailed)
+    if paths and os.path.isfile(paths["detailed"]):
+        print("⚠️  Missing _summarized.csv — running summarize...")
+        cmd_summarize(paths["detailed"])
+        return paths_from_detailed(paths["detailed"])
+
+    detailed = cmd_fetch(detailed_csv, start=start, end=end, days=days)
+    paths = paths_from_detailed(detailed)
+    if not os.path.isfile(paths["summarized"]):
+        cmd_summarize(detailed)
+    return paths
 
 
 def cmd_by_project(
@@ -502,9 +531,8 @@ def cmd_all(
     days: int | None = None,
 ) -> str:
     """Fetch + all report types (including perf-review). Does not publish."""
-    detailed, _ = cmd_fetch_summarize(
-        detailed_csv, start=start, end=end, days=days
-    )
+    detailed = cmd_fetch(detailed_csv, start=start, end=end, days=days)
+    cmd_summarize(detailed)
     cmd_by_project(detailed, start=start, end=end, days=days)
     cmd_technical(detailed, start=start, end=end, days=days)
     cmd_perf_review(detailed, start=start, end=end, days=days)
@@ -540,9 +568,8 @@ def cmd_ship(
     push: bool = False,
 ) -> str:
     """Fetch, by-project, technical, then publish to pr-reports."""
-    detailed, _ = cmd_fetch_summarize(
-        detailed_csv, start=start, end=end, days=days
-    )
+    detailed = cmd_fetch(detailed_csv, start=start, end=end, days=days)
+    cmd_summarize(detailed)
     cmd_by_project(detailed, start=start, end=end, days=days)
     cmd_technical(detailed, start=start, end=end, days=days)
     cmd_publish(detailed, push=push)
@@ -554,16 +581,19 @@ def build_parser() -> argparse.ArgumentParser:
         description="GitHub PR Analytics — fetch and generate reports",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""commands:
-  fetch         Fetch PRs + per-PR summaries → _detailed.csv, _summarized.csv
-  by-project    _summarized.csv → _by_project.md (runs fetch if CSVs missing)
-  technical     _detailed.csv → _technical_highlights.md (runs fetch if missing)
-  perf-review   _summarized.csv → _perf_review.md (runs fetch if missing)
+  fetch         GitHub → _detailed.csv
+  summarize     _detailed.csv → _summarized.csv (Claude per-PR summaries)
+  by-project    _summarized.csv → _by_project.md
+  technical     _detailed.csv → _technical_highlights.md
+  perf-review   _summarized.csv → _perf_review.md
   publish       Copy output/ to pr-reports repo and commit
-  all           fetch + by-project + technical + perf-review
-  ship          fetch + by-project + technical + publish (default)
+  all           fetch + summarize + all reports
+  ship          fetch + summarize + by-project + technical + publish (default)
 
 Examples:
   python main.py fetch --start 2026-05-04 --end 2026-05-08
+  python main.py summarize --csv output/pr_2026-05-04_2026-05-08_detailed.csv
+  python main.py summarize --force
   python main.py ship --start 2026-05-04 --end 2026-05-08
   DAYS=7 python main.py fetch
   python main.py publish --push
@@ -586,6 +616,7 @@ Examples:
         "command",
         choices=[
             "fetch",
+            "summarize",
             "by-project",
             "technical",
             "perf-review",
@@ -605,6 +636,11 @@ Examples:
         action="store_true",
         help="Push pr-reports after commit (publish/ship only)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-generate all per-PR summaries (summarize only)",
+    )
     return parser
 
 
@@ -616,8 +652,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "fetch":
-            detailed, summarized = cmd_fetch_summarize(
-                args.detailed_csv, **fetch_kw
+            detailed = cmd_fetch(args.detailed_csv, **fetch_kw)
+            print(f"\n✅ Done: {detailed}")
+        elif args.command == "summarize":
+            detailed, summarized = cmd_summarize(
+                args.detailed_csv, force=args.force
             )
             print(f"\n✅ Done: {detailed}\n           {summarized}")
         elif args.command == "by-project":

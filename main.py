@@ -2,7 +2,7 @@
 """
 Main entry point for GitHub PR Analytics Suite.
 
-Subcommands: fetch, by-project, technical, perf-review, publish, all, ship
+Subcommands: fetch, summarize, by-project, technical, perf-review, publish, all, ship
 Run `python main.py` with no args for the default `ship` workflow.
 """
 

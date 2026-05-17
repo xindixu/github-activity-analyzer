@@ -113,6 +113,89 @@ def date_bounds(start_d: date, end_d: date) -> tuple[datetime, datetime]:
     return start_dt, end_dt
 
 
+_CURSOR_SUMMARY_BLOCK = re.compile(
+    r"<!--\s*CURSOR_SUMMARY\s*-->(.*?)<!--\s*/CURSOR_SUMMARY\s*-->",
+    re.DOTALL | re.IGNORECASE,
+)
+_CURSOR_SUMMARY_OPEN = re.compile(
+    r"<!--\s*CURSOR_SUMMARY\s*-->.*",
+    re.DOTALL | re.IGNORECASE,
+)
+_PLACEHOLDER_DESCRIPTIONS = frozenset({"todo", "tbd", "n/a"})
+
+
+def _strip_blockquote_prefix(line: str) -> str:
+    stripped = line.strip()
+    if stripped.startswith(">"):
+        return stripped[1:].lstrip()
+    return stripped
+
+
+def _extract_overview_from_cursor_summary(cursor_text: str) -> str:
+    """Keep only the Overview paragraph(s) from a CURSOR_SUMMARY block."""
+    overview_lines: List[str] = []
+    in_overview = False
+
+    for line in cursor_text.splitlines():
+        content = _strip_blockquote_prefix(line)
+
+        if not in_overview:
+            if re.fullmatch(r"\*\*Overview\*\*", content, re.IGNORECASE):
+                in_overview = True
+            continue
+
+        if (
+            content.startswith("<sup")
+            or ("Reviewed by" in content and "Bugbot" in content)
+            or content.startswith("[!")
+            or (content == "---" and overview_lines)
+        ):
+            break
+        if re.fullmatch(r"\*\*[^*]+\*\*", content):
+            break
+
+        overview_lines.append(content)
+
+    while overview_lines and not overview_lines[0].strip():
+        overview_lines.pop(0)
+    while overview_lines and not overview_lines[-1].strip():
+        overview_lines.pop()
+
+    return "\n".join(overview_lines).strip()
+
+
+def _extract_cursor_summary_raw(pr_body: str) -> str:
+    match = _CURSOR_SUMMARY_BLOCK.search(pr_body)
+    if match:
+        return match.group(1).strip()
+    open_match = _CURSOR_SUMMARY_OPEN.search(pr_body)
+    if open_match:
+        inner = open_match.group(0)
+        inner = re.sub(
+            r"<!--\s*CURSOR_SUMMARY\s*-->", "", inner, count=1, flags=re.IGNORECASE
+        )
+        return inner.strip()
+    return ""
+
+
+def _extract_cursor_summary(pr_body: str) -> str:
+    raw = _extract_cursor_summary_raw(pr_body)
+    if not raw:
+        return ""
+    return _extract_overview_from_cursor_summary(raw)
+
+
+def _body_without_cursor_summary(pr_body: str) -> str:
+    text = _CURSOR_SUMMARY_BLOCK.sub("", pr_body)
+    text = _CURSOR_SUMMARY_OPEN.sub("", text)
+    return text.strip()
+
+
+def _is_meaningful_description(text: str) -> bool:
+    normalized = text.strip()
+    return bool(normalized) and normalized.lower() not in _PLACEHOLDER_DESCRIPTIONS
+
+
 class PRAnalyzer:
 
     def __init__(self, github_token: str):
@@ -135,61 +218,46 @@ class PRAnalyzer:
 
     def extract_important_description(self, pr_body: str) -> str:
         """
-        Extract only the important content from PR description.
-        Focuses on 'Description' and 'Test Plan' sections, removing boilerplate.
+        Extract important content from PR description.
+        Prefers the '## Description' section; otherwise the full body,
+        or the CURSOR_SUMMARY Overview when that is the only substantive content.
         """
         if not pr_body:
             return ""
 
-        # Split the body into lines for easier processing
         lines = pr_body.split('\n')
-
         description_content = []
-        test_plan_content = []
-        current_section = None
+        in_description = False
 
         for line in lines:
             line_stripped = line.strip()
 
-            # Detect section headers
             if line_stripped == "## Description":
-                current_section = "description"
+                in_description = True
                 continue
-            elif line_stripped == "## Test Plan":
-                current_section = "test_plan"
-                continue
-            elif line_stripped.startswith(
-                    "## Checklist") or line_stripped.startswith(
-                        "##") and "checklist" in line_stripped.lower():
-                current_section = None  # Stop processing
+            if line_stripped in ("## Test Plan", "## Checklist") or (
+                line_stripped.startswith("##")
+                and "checklist" in line_stripped.lower()
+            ):
                 break
-            elif line_stripped.startswith("<!---") or line_stripped.startswith(
-                    "<!--"):
-                current_section = None  # Stop at HTML comments
+            if line_stripped.startswith("<!---") or line_stripped.startswith("<!--"):
                 break
 
-            # Collect content for current section
-            if current_section == "description":
+            if in_description:
                 description_content.append(line)
-            elif current_section == "test_plan":
-                test_plan_content.append(line)
 
-        # Clean and combine the content
-        result_parts = []
-
-        # Process description
         desc_text = '\n'.join(description_content).strip()
         if desc_text and desc_text.lower() not in ['todo', 'tbd', 'n/a', '']:
-            result_parts.append(f"Description: {desc_text}")
+            return desc_text
 
-        # Process test plan
-        test_text = '\n'.join(test_plan_content).strip()
-        if test_text and test_text.lower() not in ['todo', 'tbd', 'n/a', '']:
-            result_parts.append(f"Test Plan: {test_text}")
+        if _is_meaningful_description(_body_without_cursor_summary(pr_body)):
+            return pr_body.strip()
 
-        return '\n\n'.join(
-            result_parts
-        ) if result_parts else "No meaningful description available"
+        cursor_summary = _extract_cursor_summary(pr_body)
+        if _is_meaningful_description(cursor_summary):
+            return cursor_summary
+
+        return pr_body.strip()
 
     def fetch_user_prs(
         self,
