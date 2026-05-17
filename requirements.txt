@@ -4,4 +4,4 @@ pandas>=1.3.0
 requests>=2.25.0
 
 # AI library for PR summarization
-anthropic>=0.40.0
+openai>=1.0.0

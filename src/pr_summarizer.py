@@ -33,23 +33,32 @@ class PRSummarizer:
     def __init__(self):
         self.client = None
         self.model = None
-        self._setup_anthropic()
+        self._setup_openai()
 
-    def _setup_anthropic(self):
+    def _setup_openai(self):
         try:
-            from anthropic import Anthropic
+            import openai
 
-            api_key = os.getenv("ANTHROPIC_API_KEY")
+            api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY environment variable required")
-            self.client = Anthropic(api_key=api_key)
-            self.model = os.getenv(
-                "ANTHROPIC_MODEL", "claude-sonnet-4-20250514"
-            )
-            print(f"✅ Anthropic client initialized with model: {self.model}")
+                raise ValueError("OPENAI_API_KEY environment variable required")
+            self.client = openai.OpenAI(api_key=api_key)
+            self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            print(f"✅ OpenAI client initialized with model: {self.model}")
         except ImportError:
-            print("❌ Anthropic library not installed. Run: pip install anthropic")
+            print("❌ OpenAI library not installed. Run: pip install openai")
             sys.exit(1)
+
+    @staticmethod
+    def _openai_reasoning_style_model(model: str) -> bool:
+        """gpt-5 / o-series: max_completion_tokens, no custom temperature."""
+        name = (model or "").lower()
+        return name.startswith(("gpt-5", "o1", "o3", "o4"))
+
+    def _openai_create_kwargs(self, max_tokens: int) -> dict:
+        if self._openai_reasoning_style_model(self.model):
+            return {"max_completion_tokens": max_tokens}
+        return {"max_tokens": max_tokens, "temperature": 0.3}
 
     def _call_llm(
         self,
@@ -63,18 +72,15 @@ class PRSummarizer:
             "concisely and accurately."
         )
         try:
-            response = self.client.messages.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=max_tokens,
-                system=system_content,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": prompt},
+                ],
+                **self._openai_create_kwargs(max_tokens),
             )
-            parts = [
-                block.text
-                for block in response.content
-                if block.type == "text"
-            ]
-            return "\n".join(parts).strip()
+            return response.choices[0].message.content.strip()
         except Exception as e:
             return f"Error: {e}"
 
@@ -582,7 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""commands:
   fetch         GitHub → _detailed.csv
-  summarize     _detailed.csv → _summarized.csv (Claude per-PR summaries)
+  summarize     _detailed.csv → _summarized.csv (OpenAI per-PR summaries)
   by-project    _summarized.csv → _by_project.md
   technical     _detailed.csv → _technical_highlights.md
   perf-review   _summarized.csv → _perf_review.md

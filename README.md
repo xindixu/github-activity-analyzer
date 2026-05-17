@@ -6,7 +6,7 @@
 
 - **📊 Pipeline Commands**: Fetch, by-project, technical, and perf-review as separate steps
 - **🔄 Auto-fetch**: Report commands re-run `fetch` if CSVs are missing
-- **🤖 AI-Powered Insights**: Uses Claude (Anthropic) to generate concise summaries and comprehensive pattern analysis
+- **🤖 AI-Powered Insights**: Uses OpenAI to generate concise summaries and comprehensive pattern analysis
 - **📁 Project Categorization**: Extracts project names from PR titles (`[CS-1234] ProjectName: description`)
 - **📝 Professional Reports**: Generates beautiful markdown reports perfect for performance reviews
 - **🔍 Comprehensive Analysis**: 5-section analysis covering project focus, technical themes, development velocity, cross-project insights, and key accomplishments
@@ -63,8 +63,8 @@ DAYS=14  # Past N days from today (default)
 # END_DATE=2026-05-08
 
 # AI Configuration (for summarization)
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-# ANTHROPIC_MODEL=claude-sonnet-4-20250514  # optional
+OPENAI_API_KEY=your_openai_api_key_here
+# OPENAI_MODEL=gpt-4o-mini  # optional; gpt-5* supported automatically
 ```
 
 #### Getting GitHub Token
@@ -73,8 +73,8 @@ ANTHROPIC_API_KEY=your_anthropic_api_key_here
 3. Select scopes: `repo` (for private repos) or `public_repo` (for public repos)
 4. Copy the generated token
 
-#### Getting Anthropic API Key
-1. Go to https://console.anthropic.com/settings/keys
+#### Getting OpenAI API Key
+1. Go to https://platform.openai.com/api-keys
 2. Create a new API key
 3. Copy the key (keep it secure!)
 
@@ -118,7 +118,7 @@ python main.py by-project --csv output/pr_2026-05-04_2026-05-08_detailed.csv
 | Command | What it does |
 |---------|----------------|
 | `fetch` | GitHub → `_detailed.csv` |
-| `summarize` | `_detailed.csv` → `_summarized.csv` (Claude) |
+| `summarize` | `_detailed.csv` → `_summarized.csv` (OpenAI) |
 | `by-project` | `_summarized.csv` → `_by_project.md` |
 | `technical` | `_detailed.csv` → `_technical_highlights.md` |
 | `perf-review` | `_summarized.csv` → `_perf_review.md` |
@@ -247,7 +247,7 @@ Average lines per PR: 509.0
 
 🤖 Step 2: Generating AI summaries...
 📊 Loaded 325 PRs from output/pr_2025-01-15_2025-07-14_detailed.csv
-✅ Anthropic client initialized with model: claude-sonnet-4-20250514
+✅ OpenAI client initialized with model: gpt-4o-mini
 🤖 Generating AI summaries...
 Processing PR 1/325: [CS-6454] DS UI: Disable indexing modal should lis...
 Processing PR 2/325: [CS-6435] DS UI: Indexing items over limit + use r...
